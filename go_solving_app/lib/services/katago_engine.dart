@@ -15,7 +15,7 @@ class KataGoEngine {
   static const int _globalFeatures = 19;
 
   final OnnxRuntime _onnxRuntime = OnnxRuntime();
-  OnnxRuntimeSession? _session;
+  OrtSession? _session;
   bool _isInitialized = false;
 
   bool get isInitialized => _isInitialized;
@@ -57,23 +57,29 @@ class KataGoEngine {
     final binaryInput = _encodeBinaryFeatures(board);
     final globalInput = _encodeGlobalFeatures(board);
 
-    // 建立輸入張量
-    final inputs = <String, OnnxRuntimeTensor>{
-      'input_binary': OnnxRuntimeTensor.fromList(
-        binaryInput,
-        [1, _binaryChannels, n, n],
-      ),
-      'input_global': OnnxRuntimeTensor.fromList(
-        globalInput,
-        [1, _globalFeatures],
-      ),
-    };
+    // 建立輸入張量（OrtValue.fromList 是 async）
+    final binaryTensor = await OrtValue.fromList(
+      Float32List.fromList(binaryInput),
+      [1, _binaryChannels, n, n],
+    );
+    final globalTensor = await OrtValue.fromList(
+      Float32List.fromList(globalInput),
+      [1, _globalFeatures],
+    );
 
-    // 執行推論
-    final outputs = await _session!.run(inputs);
+    try {
+      // 執行推論
+      final outputs = await _session!.run({
+        'input_binary': binaryTensor,
+        'input_global': globalTensor,
+      });
 
-    // 解析輸出
-    return _parseOutputs(outputs, board);
+      // 解析輸出
+      return await _parseOutputs(outputs, board);
+    } finally {
+      await binaryTensor.dispose();
+      await globalTensor.dispose();
+    }
   }
 
   /// 編碼 22 個二進位空間特徵平面
@@ -82,7 +88,6 @@ class KataGoEngine {
     final n = board.boardSize;
     final features = List<double>.filled(_binaryChannels * n * n, 0.0);
 
-    // 當前玩家和對手
     final currentPlayer = board.nextPlayer;
     final opponent = currentPlayer.opponent;
 
@@ -121,7 +126,6 @@ class KataGoEngine {
     }
 
     // Ch 10-21: 其餘特徵設為 0（梯子、活棋、規則等）
-    // 簡化處理：這些特徵在基本分析中影響較小
 
     return features;
   }
@@ -145,26 +149,30 @@ class KataGoEngine {
     features[4] = 1.0;
 
     // Feature 5-18: 其餘規則與狀態特徵設為 0
-    // 簡化處理
 
     return features;
   }
 
   /// 解析模型輸出
-  AnalysisResult _parseOutputs(
-    Map<String, OnnxRuntimeTensor> outputs,
+  Future<AnalysisResult> _parseOutputs(
+    Map<String, OrtValue> outputs,
     BoardState board,
-  ) {
+  ) async {
     final n = board.boardSize;
 
     // 解析 policy（著手機率）
     final policyTensor = outputs['output_policy'];
-    final policyData = policyTensor?.data as List<double>? ?? [];
+    List<double> policyData = [];
+    if (policyTensor != null) {
+      final rawData = await policyTensor.asFlattenedList();
+      policyData = rawData.cast<num>().map((e) => e.toDouble()).toList();
+      await policyTensor.dispose();
+    }
 
     // Softmax
     final policy = _softmax(policyData);
 
-    // 取 top-N 最佳著手
+    // 取 top-N 最佳著手（排除 pass = index n*n）
     final moves = <MoveSuggestion>[];
     final indexed = List.generate(
       min(policy.length, n * n),
@@ -185,14 +193,22 @@ class KataGoEngine {
 
     // 解析 value（勝率）
     final valueTensor = outputs['output_value'];
-    final valueData = valueTensor?.data as List<double>? ?? [0.5, 0.5, 0.0];
-    final winrate = _softmax(valueData.take(3).toList());
+    List<double> winrate = [0.5, 0.5, 0.0];
+    if (valueTensor != null) {
+      final rawData = await valueTensor.asFlattenedList();
+      final valueData = rawData.cast<num>().map((e) => e.toDouble()).toList();
+      if (valueData.length >= 3) {
+        winrate = _softmax(valueData.sublist(0, 3));
+      }
+      await valueTensor.dispose();
+    }
 
     // 解析 ownership（地域歸屬）
     List<List<double>>? ownership;
     final ownershipTensor = outputs['output_ownership'];
     if (ownershipTensor != null) {
-      final ownershipData = ownershipTensor.data as List<double>? ?? [];
+      final rawData = await ownershipTensor.asFlattenedList();
+      final ownershipData = rawData.cast<num>().map((e) => e.toDouble()).toList();
       if (ownershipData.length >= n * n) {
         ownership = List.generate(
           n,
@@ -201,6 +217,15 @@ class KataGoEngine {
             (c) => _tanh(ownershipData[r * n + c]),
           ),
         );
+      }
+      await ownershipTensor.dispose();
+    }
+
+    // 清理未使用的輸出張量
+    for (final entry in outputs.entries) {
+      if (!['output_policy', 'output_value', 'output_ownership']
+          .contains(entry.key)) {
+        await entry.value.dispose();
       }
     }
 
