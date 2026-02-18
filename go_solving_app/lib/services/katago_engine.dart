@@ -210,11 +210,12 @@ class KataGoEngine {
       final rawData = await ownershipTensor.asFlattenedList();
       final ownershipData = rawData.cast<num>().map((e) => e.toDouble()).toList();
       if (ownershipData.length >= n * n) {
+        // Model output already has tanh applied
         ownership = List.generate(
           n,
           (r) => List.generate(
             n,
-            (c) => _tanh(ownershipData[r * n + c]),
+            (c) => ownershipData[r * n + c],
           ),
         );
       }

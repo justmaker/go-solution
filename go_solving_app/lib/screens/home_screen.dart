@@ -65,6 +65,22 @@ class HomeScreen extends StatelessWidget {
                   label: const Text('從相簿選取'),
                 ),
               ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pushNamed(
+                      context,
+                      '/analysis',
+                      arguments: 'demo', // 使用範例棋盤
+                    );
+                  },
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('範例棋盤（測試用）'),
+                ),
+              ),
             ],
           ),
         ),
