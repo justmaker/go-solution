@@ -17,7 +17,7 @@ class MoveSuggestion {
 
   @override
   String toString() =>
-      'Move #$rank: $position (${probabilityText})';
+      'Move #$rank: $position ($probabilityText)';
 }
 
 /// KataGo 分析結果模型

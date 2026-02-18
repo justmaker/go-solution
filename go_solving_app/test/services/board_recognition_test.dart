@@ -1,14 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:go_solving_app/services/board_recognition.dart';
 
 void main() {
   group('BoardRecognition', () {
-    late BoardRecognition recognition;
-
-    setUp(() {
-      recognition = BoardRecognition();
-    });
-
     // OpenCV FFI 測試需在整合測試環境中執行
     // test('recognizeFromImage throws on non-existent file', () async {
     //   expect(
