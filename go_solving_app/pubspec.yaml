@@ -1,0 +1,33 @@
+name: go_solving_app
+description: "圍棋解題 App - 拍照辨識棋盤，KataGo AI 分析最佳下一手"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  camera: ^0.11.1
+  image_picker: ^1.1.2
+  opencv_dart: ^1.3.5
+  flutter_onnxruntime: ^1.6.3
+  image: ^4.3.0
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  collection: ^1.19.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/
