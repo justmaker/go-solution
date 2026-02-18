@@ -18,12 +18,14 @@ class BoardRecognition {
 
       // 3. 偵測棋盤邊界並進行透視校正
       final warped = _findAndWarpBoard(processed, img);
+      processed.dispose();
 
       // 4. 偵測格線並推斷棋盤大小
       final (boardSize, intersections) = _detectGridLines(warped);
 
       // 5. 在每個交叉點偵測棋子
       final grid = _detectStones(warped, boardSize, intersections);
+      warped.dispose();
 
       return BoardState(boardSize: boardSize, grid: grid);
     } finally {
@@ -34,8 +36,9 @@ class BoardRecognition {
   /// 影像前處理：灰階、模糊、CLAHE 對比增強
   cv.Mat _preprocess(cv.Mat img) {
     final gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY);
-    final blurred = cv.gaussianBlur(gray, (5, 5), sigmaX: 1.0);
-    final clahe = cv.CLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
+    final blurred = cv.gaussianBlur(gray, (5, 5), 1.0);
+    // CLAHE 建構子：CLAHE([clipLimit, tileGridSize])
+    final clahe = cv.CLAHE(2.0, (8, 8));
     final enhanced = clahe.apply(blurred);
     gray.dispose();
     blurred.dispose();
@@ -48,7 +51,7 @@ class BoardRecognition {
     final edges = cv.canny(processed, 50, 150);
 
     // 尋找輪廓
-    final (contours, _) = cv.findContours(
+    final (contours, hierarchy) = cv.findContours(
       edges,
       cv.RETR_EXTERNAL,
       cv.CHAIN_APPROX_SIMPLE,
@@ -56,7 +59,6 @@ class BoardRecognition {
     edges.dispose();
 
     if (contours.isEmpty) {
-      // 若找不到輪廓，直接使用原圖
       return original.clone();
     }
 
@@ -96,28 +98,19 @@ class BoardRecognition {
 
     final size = max(width, height);
 
-    // 建立目標點
-    final dst = cv.VecPoint.fromList([
-      cv.Point(0, 0),
-      cv.Point(size - 1, 0),
-      cv.Point(size - 1, size - 1),
-      cv.Point(0, size - 1),
+    // 透視變換：使用 Point2f 版本
+    final srcPoints = cv.VecPoint2f.fromList(
+      corners.map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList(),
+    );
+    final dstPoints = cv.VecPoint2f.fromList([
+      cv.Point2f(0, 0),
+      cv.Point2f(size.toDouble() - 1, 0),
+      cv.Point2f(size.toDouble() - 1, size.toDouble() - 1),
+      cv.Point2f(0, size.toDouble() - 1),
     ]);
 
-    // 透視變換
-    final srcPoints = corners.map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList();
-    final dstPoints = dst.toList().map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList();
-
-    final matrix = cv.getPerspectiveTransform(
-      cv.VecPoint2f.fromList(srcPoints),
-      cv.VecPoint2f.fromList(dstPoints),
-    );
-
-    final warped = cv.warpPerspective(
-      original,
-      matrix,
-      (size, size),
-    );
+    final matrix = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
+    final warped = cv.warpPerspective(original, matrix, (size, size));
 
     matrix.dispose();
     return warped;
@@ -132,10 +125,11 @@ class BoardRecognition {
     final tl = pts[0];
     final br = pts[3];
 
-    // 按 y-x 排序，最小的是右上，最大的是左下
-    pts.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
-    final tr = pts[0];
-    final bl = pts[3];
+    // 在剩餘兩點中，y-x 最小的是右上，最大的是左下
+    final remaining = [pts[1], pts[2]];
+    remaining.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
+    final tr = remaining[0];
+    final bl = remaining[1];
 
     return [tl, tr, br, bl];
   }
@@ -147,17 +141,17 @@ class BoardRecognition {
   /// 使用霍夫線變換偵測格線，自動推斷棋盤大小
   (int, List<List<cv.Point2f>>) _detectGridLines(cv.Mat warped) {
     final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
-    final blurred = cv.gaussianBlur(gray, (3, 3), sigmaX: 0);
+    final blurred = cv.gaussianBlur(gray, (3, 3), 0);
     final edges = cv.canny(blurred, 50, 150);
 
-    // 霍夫線變換
-    final lines = cv.HoughLinesP(
+    // 霍夫線變換，回傳 Mat (Nx1x4, CV_32SC4)
+    final linesMat = cv.HoughLinesP(
       edges,
       1,
       pi / 180,
       80,
       minLineLength: warped.cols * 0.3,
-      maxLineGap: warped.cols ~/ 20,
+      maxLineGap: warped.cols / 20,
     );
 
     gray.dispose();
@@ -168,7 +162,9 @@ class BoardRecognition {
     final horizontalYs = <double>[];
     final verticalXs = <double>[];
 
-    for (final line in lines.toList()) {
+    // HoughLinesP 回傳的 Mat 每行是一條線 [x1, y1, x2, y2]
+    for (int i = 0; i < linesMat.rows; i++) {
+      final line = linesMat.at<cv.Vec4i>(i, 0);
       final x1 = line.val1.toDouble();
       final y1 = line.val2.toDouble();
       final x2 = line.val3.toDouble();
@@ -176,13 +172,12 @@ class BoardRecognition {
 
       final angle = atan2((y2 - y1).abs(), (x2 - x1).abs());
       if (angle < pi / 6) {
-        // 接近水平
         horizontalYs.add((y1 + y2) / 2);
       } else if (angle > pi / 3) {
-        // 接近垂直
         verticalXs.add((x1 + x2) / 2);
       }
     }
+    linesMat.dispose();
 
     // 聚類分析找出 N 條線
     final hClusters = _clusterValues(horizontalYs, warped.rows * 0.02);
@@ -283,9 +278,10 @@ class BoardRecognition {
           for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
             final sx = (x + dx).clamp(0, warped.cols - 1);
             final sy = (y + dy).clamp(0, warped.rows - 1);
-            final pixel = hsv.at<cv.Vec3b>(sy, sx);
-            totalS += pixel.val2; // Saturation
-            totalV += pixel.val3; // Value
+            // HSV Mat 為 CV_8UC3，使用 atPixel 讀取
+            final pixel = hsv.atPixel(sy, sx);
+            totalS += pixel[1]; // Saturation
+            totalV += pixel[2]; // Value
             sampleCount++;
           }
         }
@@ -299,7 +295,6 @@ class BoardRecognition {
         } else if (avgV > 180 && avgS < 40) {
           grid[r][c] = StoneColor.white;
         }
-        // 否則為空位
       }
     }
 
