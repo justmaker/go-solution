@@ -14,7 +14,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   camera: ^0.11.1
   image_picker: ^1.1.2
-  # opencv_dart: ^1.3.5  # Disabled for simulator testing (device-only arm64 libs)
+  opencv_dart: ^1.3.5
   flutter_onnxruntime: ^1.6.3
   image: ^4.3.0
   path_provider: ^2.1.5

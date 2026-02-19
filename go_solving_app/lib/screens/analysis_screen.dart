@@ -26,8 +26,20 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     super.didChangeDependencies();
     final imagePath = ModalRoute.of(context)?.settings.arguments as String?;
     if (imagePath != null && _boardState == null && !_isRecognizing) {
-      _recognizeBoard(imagePath);
+      if (imagePath == 'demo') {
+        _loadDemoBoard();
+      } else {
+        _recognizeBoard(imagePath);
+      }
     }
+  }
+
+  void _loadDemoBoard() {
+    final recognition = BoardRecognition();
+    setState(() {
+      _boardState = recognition.generateSampleBoard();
+    });
+    _runAnalysis();
   }
 
   Future<void> _recognizeBoard(String imagePath) async {
