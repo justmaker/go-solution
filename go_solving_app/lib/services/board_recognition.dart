@@ -67,8 +67,15 @@ class BoardRecognition {
     }
 
     try {
+      // 除錯：儲存 warped 影像到外部儲存（方便離線分析）
       // 1. 偵測棋盤邊界並進行透視校正
       final warped = _findAndWarpBoard(img);
+
+      // 儲存 warped 供除錯
+      try {
+        cv.imwrite('/sdcard/Pictures/debug_warped.jpg', warped);
+        debugPrint('[BoardRecognition] 除錯: warped 已存到 /sdcard/Pictures/debug_warped.jpg');
+      } catch (_) {}
 
       // 2. 偵測格線並推斷棋盤大小（均勻間距）
       final (boardSize, intersections) = _detectGridLines(warped);
@@ -110,8 +117,14 @@ class BoardRecognition {
 
   /// 嘗試用顏色偵測棋盤區域，失敗則用邊緣偵測，再失敗返回原圖
   cv.Mat _findAndWarpBoard(cv.Mat original) {
-    // 方法 A：顏色偵測（棋盤木色 H≈12-35, S>50）
-    final warped = _findBoardByColor(original);
+    debugPrint('[BoardRecognition] 原始影像: ${original.cols}x${original.rows}');
+
+    // 方法 A：顏色偵測 — 嚴格範圍（實拍棋盤）
+    var warped = _findBoardByColor(original, 12, 35, 50, 100);
+    if (warped != null) return warped;
+
+    // 方法 A2：顏色偵測 — 寬鬆範圍（截圖/螢幕翻拍，色彩較淡）
+    warped = _findBoardByColor(original, 8, 42, 15, 50);
     if (warped != null) return warped;
 
     // 方法 B：邊緣偵測（Canny + 輪廓）
@@ -125,16 +138,16 @@ class BoardRecognition {
     enhanced.dispose();
     if (edgeWarped != null) return edgeWarped;
 
+    debugPrint('[BoardRecognition] 所有偵測方法均失敗，使用原圖');
     return original.clone();
   }
 
   /// 顏色偵測：用 HSV 過濾暖色木板，找最大連通區域
-  cv.Mat? _findBoardByColor(cv.Mat original) {
+  cv.Mat? _findBoardByColor(cv.Mat original, int hLow, int hHigh, int sLow, int vLow) {
     final hsv = cv.cvtColor(original, cv.COLOR_BGR2HSV);
 
-    // 棋盤木色範圍：暖黃/橘（H 12-35）
-    final lower = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [12, 50, 100]);
-    final upper = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [35, 255, 255]);
+    final lower = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hLow, sLow, vLow]);
+    final upper = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [hHigh, 255, 255]);
     final mask = cv.inRange(hsv, lower, upper);
     hsv.dispose();
     lower.dispose();
@@ -155,7 +168,10 @@ class BoardRecognition {
     );
     cleaned.dispose();
 
-    if (contours.isEmpty) return null;
+    if (contours.isEmpty) {
+      debugPrint('[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 無輪廓');
+      return null;
+    }
 
     // 找最大輪廓
     cv.VecPoint? bestContour;
@@ -168,9 +184,11 @@ class BoardRecognition {
       }
     }
 
-    // 面積至少佔影像 20%
-    if (bestContour == null ||
-        maxArea < original.rows * original.cols * 0.2) {
+    // 面積至少佔影像 10%
+    final totalArea = original.rows * original.cols;
+    final ratio = maxArea / totalArea;
+    if (bestContour == null || ratio < 0.10) {
+      debugPrint('[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 面積不足 ${(ratio * 100).toStringAsFixed(1)}%');
       return null;
     }
 
@@ -202,7 +220,7 @@ class BoardRecognition {
     final warped = cv.warpPerspective(original, matrix, (size, size));
     matrix.dispose();
 
-    debugPrint('[BoardRecognition] 顏色偵測成功: ${size}x$size');
+    debugPrint('[BoardRecognition] 顏色偵測成功(H=$hLow-$hHigh S>=$sLow V>=$vLow): ${size}x$size (面積${(ratio * 100).toStringAsFixed(1)}%)');
     return warped;
   }
 
@@ -347,9 +365,25 @@ class BoardRecognition {
     final hCombined = _combinePositions(hDips, hClusters, size * 0.025);
     final vCombined = _combinePositions(vDips, vClusters, size * 0.025);
 
+    debugPrint('[BoardRecognition] Warped size: ${size}x$size');
     debugPrint('[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
     debugPrint('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
     debugPrint('[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
+    // 列出合併位置的連續差值，幫助診斷
+    if (hCombined.length >= 2) {
+      final hDiffs = <String>[];
+      for (int i = 0; i < hCombined.length - 1; i++) {
+        hDiffs.add((hCombined[i + 1] - hCombined[i]).toStringAsFixed(0));
+      }
+      debugPrint('[BoardRecognition] H diffs: $hDiffs');
+    }
+    if (vCombined.length >= 2) {
+      final vDiffs = <String>[];
+      for (int i = 0; i < vCombined.length - 1; i++) {
+        vDiffs.add((vCombined[i + 1] - vCombined[i]).toStringAsFixed(0));
+      }
+      debugPrint('[BoardRecognition] V diffs: $vDiffs');
+    }
 
     // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
     final (hSpacing, hPhase, hInl) =
@@ -396,7 +430,8 @@ class BoardRecognition {
     return (boardSize, intersections);
   }
 
-  /// 暴力搜尋最佳間距：對每個候選間距，找最佳相位，算 inlier 數
+  /// 暴力搜尋最佳間距：對每個候選間距，找最佳相位，用 inliers * sqrt(sp) 評分
+  /// sqrt(sp) 權重適度偏好較大間距，自然避免 harmonic 半間距問題
   (double, double, int) _findBestSpacing(List<double> positions, double totalSize) {
     if (positions.length < 3) {
       return (totalSize / 14, totalSize * 0.05, 0);
@@ -407,10 +442,11 @@ class BoardRecognition {
 
     var bestSpacing = totalSize / 14;
     var bestPhase = 0.0;
-    var bestScore = 0;
+    var bestScore = 0.0;
 
     for (int sp = minSp; sp <= maxSp; sp++) {
       final tolerance = sp * 0.12;
+      final spSqrt = sqrt(sp.toDouble());
       for (final ref in positions) {
         final phase = ref % sp;
         var inliers = 0;
@@ -419,39 +455,12 @@ class BoardRecognition {
           if (remainder > sp / 2) remainder = sp - remainder;
           if (remainder < tolerance) inliers++;
         }
-        if (inliers > bestScore) {
-          bestScore = inliers;
+        final score = inliers * spSqrt;
+        if (score > bestScore) {
+          bestScore = score;
           bestSpacing = sp.toDouble();
           bestPhase = phase;
         }
-      }
-    }
-
-    // Harmonic 修正：如果 2× 間距也有類似的 inlier 數，
-    // 說明當前結果是半間距（harmonic），改用 2×
-    final doubleSp = (bestSpacing * 2).round();
-    if (doubleSp <= maxSp) {
-      final dTol = doubleSp * 0.12;
-      var dBestInliers = 0;
-      var dBestPhase = 0.0;
-      for (final ref in positions) {
-        final phase = ref % doubleSp;
-        var inliers = 0;
-        for (final p in positions) {
-          var remainder = (p - phase) % doubleSp;
-          if (remainder > doubleSp / 2) remainder = doubleSp - remainder;
-          if (remainder < dTol) inliers++;
-        }
-        if (inliers > dBestInliers) {
-          dBestInliers = inliers;
-          dBestPhase = phase;
-        }
-      }
-      // 半間距的 inlier 數幾乎相同 → 是 harmonic，改用全間距
-      if (dBestInliers >= bestScore * 0.8) {
-        bestSpacing = doubleSp.toDouble();
-        bestPhase = dBestPhase;
-        bestScore = dBestInliers;
       }
     }
 
