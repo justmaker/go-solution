@@ -22,32 +22,33 @@ class _IntersectionSample {
 
 /// 辨識管線除錯資訊
 class RecognitionDebugInfo {
-  int contourCount = 0;
-  int horizontalLineCount = 0;
-  int verticalLineCount = 0;
+  String boardDetectionMethod = '';
   int detectedBoardSize = 0;
+  int hLineCount = 0;
+  int vLineCount = 0;
+  double hSpacing = 0;
+  double vSpacing = 0;
   List<double> clusterCenters = [];
   double thresholdBlackBoard = 0;
   double thresholdBoardWhite = 0;
-  double adaptiveSatThreshold = 0;
+  double satLimitBlack = 0;
+  double satLimitWhite = 0;
   int blackCount = 0;
   int whiteCount = 0;
   int emptyCount = 0;
   double vMin = 0;
   double vMax = 0;
-  double vMean = 0;
 
   @override
   String toString() {
     return '''
 === 棋盤辨識除錯 ===
-輪廓數: $contourCount
-水平線: $horizontalLineCount, 垂直線: $verticalLineCount
-棋盤大小: ${detectedBoardSize}x$detectedBoardSize
-V 值範圍: ${vMin.toStringAsFixed(1)} ~ ${vMax.toStringAsFixed(1)}, 平均: ${vMean.toStringAsFixed(1)}
+板面偵測: $boardDetectionMethod
+格線: H=$hLineCount, V=$vLineCount → ${detectedBoardSize}x$detectedBoardSize
+間距: H=${hSpacing.toStringAsFixed(1)}, V=${vSpacing.toStringAsFixed(1)}
+V 範圍: ${vMin.toStringAsFixed(1)} ~ ${vMax.toStringAsFixed(1)}
 聚類中心: ${clusterCenters.map((c) => c.toStringAsFixed(1)).join(', ')}
-閾值: 黑/盤=${thresholdBlackBoard.toStringAsFixed(1)}, 盤/白=${thresholdBoardWhite.toStringAsFixed(1)}
-飽和度閾值: ${adaptiveSatThreshold.toStringAsFixed(1)}
+閾值: B<${thresholdBlackBoard.toStringAsFixed(1)} S<${satLimitBlack.toStringAsFixed(1)}, W>${thresholdBoardWhite.toStringAsFixed(1)} S<${satLimitWhite.toStringAsFixed(1)}
 結果: 黑=$blackCount, 白=$whiteCount, 空=$emptyCount
 ====================''';
   }
@@ -57,26 +58,22 @@ V 值範圍: ${vMin.toStringAsFixed(1)} ~ ${vMax.toStringAsFixed(1)}, 平均: ${
 class BoardRecognition {
   /// 最近一次辨識的除錯資訊
   RecognitionDebugInfo? lastDebugInfo;
+
   /// 從影像檔案辨識棋盤狀態
   Future<BoardState> recognizeFromImage(String imagePath) async {
-    // 1. 讀取影像
     final img = cv.imread(imagePath);
     if (img.isEmpty) {
       throw Exception('無法讀取影像: $imagePath');
     }
 
     try {
-      // 2. 影像前處理
-      final processed = _preprocess(img);
+      // 1. 偵測棋盤邊界並進行透視校正
+      final warped = _findAndWarpBoard(img);
 
-      // 3. 偵測棋盤邊界並進行透視校正
-      final warped = _findAndWarpBoard(processed, img);
-      processed.dispose();
-
-      // 4. 偵測格線並推斷棋盤大小
+      // 2. 偵測格線並推斷棋盤大小（均勻間距）
       final (boardSize, intersections) = _detectGridLines(warped);
 
-      // 5. 在每個交叉點偵測棋子
+      // 3. 在每個交叉點偵測棋子
       final grid = _detectStones(warped, boardSize, intersections);
       warped.dispose();
 
@@ -87,20 +84,18 @@ class BoardRecognition {
   }
 
   /// 產生範例棋盤用於測試（無需 OpenCV）
-  /// 使用 19x19 棋盤以充分利用 KataGo 模型
   BoardState generateSampleBoard() {
     const boardSize = 19;
     final grid = List.generate(
       boardSize,
       (_) => List.filled(boardSize, StoneColor.empty),
     );
-    // 星位附近的開局範例
-    grid[3][3] = StoneColor.black;   // D16
-    grid[3][15] = StoneColor.black;  // Q16
-    grid[15][3] = StoneColor.black;  // D4
-    grid[2][5] = StoneColor.white;   // F17
-    grid[3][9] = StoneColor.white;   // K16
-    grid[15][15] = StoneColor.white; // Q4
+    grid[3][3] = StoneColor.black;
+    grid[3][15] = StoneColor.black;
+    grid[15][3] = StoneColor.black;
+    grid[2][5] = StoneColor.white;
+    grid[3][9] = StoneColor.white;
+    grid[15][15] = StoneColor.white;
     return BoardState(
       boardSize: boardSize,
       grid: grid,
@@ -109,64 +104,155 @@ class BoardRecognition {
     );
   }
 
-  /// 影像前處理：灰階、模糊、CLAHE 對比增強
-  cv.Mat _preprocess(cv.Mat img) {
-    final gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY);
+  // ============================================================
+  // 步驟 1：棋盤偵測與透視校正
+  // ============================================================
+
+  /// 嘗試用顏色偵測棋盤區域，失敗則用邊緣偵測，再失敗返回原圖
+  cv.Mat _findAndWarpBoard(cv.Mat original) {
+    // 方法 A：顏色偵測（棋盤木色 H≈12-35, S>50）
+    final warped = _findBoardByColor(original);
+    if (warped != null) return warped;
+
+    // 方法 B：邊緣偵測（Canny + 輪廓）
+    final gray = cv.cvtColor(original, cv.COLOR_BGR2GRAY);
     final blurred = cv.gaussianBlur(gray, (5, 5), 1.0);
     final clahe = cv.CLAHE(2.0, (8, 8));
     final enhanced = clahe.apply(blurred);
+    final edgeWarped = _findBoardByEdge(enhanced, original);
     gray.dispose();
     blurred.dispose();
-    return enhanced;
+    enhanced.dispose();
+    if (edgeWarped != null) return edgeWarped;
+
+    return original.clone();
   }
 
-  /// 偵測棋盤邊界並進行四點透視校正
-  cv.Mat _findAndWarpBoard(cv.Mat processed, cv.Mat original) {
-    final edges = cv.canny(processed, 50, 150);
+  /// 顏色偵測：用 HSV 過濾暖色木板，找最大連通區域
+  cv.Mat? _findBoardByColor(cv.Mat original) {
+    final hsv = cv.cvtColor(original, cv.COLOR_BGR2HSV);
 
-    final (contours, hierarchy) = cv.findContours(
-      edges,
+    // 棋盤木色範圍：暖黃/橘（H 12-35）
+    final lower = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [12, 50, 100]);
+    final upper = cv.Mat.fromList(1, 3, cv.MatType.CV_8UC3, [35, 255, 255]);
+    final mask = cv.inRange(hsv, lower, upper);
+    hsv.dispose();
+    lower.dispose();
+    upper.dispose();
+
+    // 形態學清理
+    final kernel = cv.getStructuringElement(cv.MORPH_RECT, (15, 15));
+    final closed = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel);
+    final cleaned = cv.morphologyEx(closed, cv.MORPH_OPEN, kernel);
+    mask.dispose();
+    closed.dispose();
+    kernel.dispose();
+
+    final (contours, _) = cv.findContours(
+      cleaned,
       cv.RETR_EXTERNAL,
       cv.CHAIN_APPROX_SIMPLE,
     );
-    edges.dispose();
+    cleaned.dispose();
 
-    if (contours.isEmpty) {
-      return original.clone();
+    if (contours.isEmpty) return null;
+
+    // 找最大輪廓
+    cv.VecPoint? bestContour;
+    double maxArea = 0;
+    for (final contour in contours) {
+      final area = cv.contourArea(contour);
+      if (area > maxArea) {
+        maxArea = area;
+        bestContour = contour;
+      }
     }
+
+    // 面積至少佔影像 20%
+    if (bestContour == null ||
+        maxArea < original.rows * original.cols * 0.2) {
+      return null;
+    }
+
+    // 取最小面積矩形
+    final rect = cv.minAreaRect(bestContour);
+    final boxPoints = cv.boxPoints(rect);
+    final corners = _orderPoints2f(boxPoints);
+
+    final w = max(
+      _distance2f(corners[0], corners[1]),
+      _distance2f(corners[2], corners[3]),
+    ).toInt();
+    final h = max(
+      _distance2f(corners[0], corners[3]),
+      _distance2f(corners[1], corners[2]),
+    ).toInt();
+    final size = max(w, h);
+    if (size < 100) return null;
+
+    final srcPoints = cv.VecPoint2f.fromList(corners);
+    final dstPoints = cv.VecPoint2f.fromList([
+      cv.Point2f(0, 0),
+      cv.Point2f(size.toDouble() - 1, 0),
+      cv.Point2f(size.toDouble() - 1, size.toDouble() - 1),
+      cv.Point2f(0, size.toDouble() - 1),
+    ]);
+
+    final matrix = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
+    final warped = cv.warpPerspective(original, matrix, (size, size));
+    matrix.dispose();
+
+    debugPrint('[BoardRecognition] 顏色偵測成功: ${size}x$size');
+    return warped;
+  }
+
+  List<cv.Point2f> _orderPoints2f(cv.VecPoint2f points) {
+    final pts = points.toList();
+    pts.sort((a, b) => (a.x + a.y).compareTo(b.x + b.y));
+    final tl = pts[0];
+    final br = pts[3];
+    final remaining = [pts[1], pts[2]];
+    remaining.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
+    return [tl, remaining[0], br, remaining[1]];
+  }
+
+  double _distance2f(cv.Point2f a, cv.Point2f b) {
+    return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
+  }
+
+  /// 邊緣偵測：Canny + 找四邊形輪廓
+  cv.Mat? _findBoardByEdge(cv.Mat processed, cv.Mat original) {
+    final edges = cv.canny(processed, 50, 150);
+    final (contours, _) = cv.findContours(
+      edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE,
+    );
+    edges.dispose();
 
     cv.VecPoint? bestContour;
     double maxArea = 0;
-
     for (final contour in contours) {
       final area = cv.contourArea(contour);
       if (area < original.rows * original.cols * 0.1) continue;
-
       final peri = cv.arcLength(contour, true);
       final approx = cv.approxPolyDP(contour, 0.02 * peri, true);
-
       if (approx.length == 4 && area > maxArea) {
         maxArea = area;
         bestContour = approx;
       }
     }
 
-    if (bestContour == null || bestContour.length != 4) {
-      return original.clone();
-    }
+    if (bestContour == null || bestContour.length != 4) return null;
 
     final corners = _orderPoints(bestContour);
-
-    final width = max(
+    final w = max(
       _distance(corners[0], corners[1]),
       _distance(corners[2], corners[3]),
     ).toInt();
-    final height = max(
+    final h = max(
       _distance(corners[0], corners[3]),
       _distance(corners[1], corners[2]),
     ).toInt();
-
-    final size = max(width, height);
+    final size = max(w, h);
 
     final srcPoints = cv.VecPoint2f.fromList(
       corners.map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList(),
@@ -180,8 +266,9 @@ class BoardRecognition {
 
     final matrix = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
     final warped = cv.warpPerspective(original, matrix, (size, size));
-
     matrix.dispose();
+
+    debugPrint('[BoardRecognition] 邊緣偵測成功: ${size}x$size');
     return warped;
   }
 
@@ -192,31 +279,32 @@ class BoardRecognition {
     final br = pts[3];
     final remaining = [pts[1], pts[2]];
     remaining.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
-    final tr = remaining[0];
-    final bl = remaining[1];
-    return [tl, tr, br, bl];
+    return [tl, remaining[0], br, remaining[1]];
   }
 
   double _distance(cv.Point a, cv.Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2).toDouble());
   }
 
-  /// 使用霍夫線變換偵測格線，自動推斷棋盤大小
+  // ============================================================
+  // 步驟 2：格線偵測（暴力搜尋最佳間距）
+  // ============================================================
+
   (int, List<List<cv.Point2f>>) _detectGridLines(cv.Mat warped) {
+    final size = warped.rows; // 正方形影像
+
+    // === Hough 線偵測 ===
     final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
     final blurred = cv.gaussianBlur(gray, (3, 3), 0);
     final edges = cv.canny(blurred, 50, 150);
 
     final linesMat = cv.HoughLinesP(
-      edges,
-      1,
-      pi / 180,
-      80,
-      minLineLength: warped.cols * 0.3,
-      maxLineGap: warped.cols / 20,
+      edges, 1, pi / 180,
+      50,
+      minLineLength: warped.cols * 0.2,
+      maxLineGap: warped.cols / 15,
     );
 
-    gray.dispose();
     blurred.dispose();
     edges.dispose();
 
@@ -229,7 +317,6 @@ class BoardRecognition {
       final y1 = line.val2.toDouble();
       final x2 = line.val3.toDouble();
       final y2 = line.val4.toDouble();
-
       final angle = atan2((y2 - y1).abs(), (x2 - x1).abs());
       if (angle < pi / 6) {
         horizontalYs.add((y1 + y2) / 2);
@@ -239,49 +326,295 @@ class BoardRecognition {
     }
     linesMat.dispose();
 
-    final hClusters = _clusterValues(horizontalYs, warped.rows * 0.02);
-    final vClusters = _clusterValues(verticalXs, warped.cols * 0.02);
+    final hClusters = _clusterValues(horizontalYs, size * 0.02);
+    final vClusters = _clusterValues(verticalXs, size * 0.02);
 
-    final detectedSize = ((hClusters.length + vClusters.length) / 2).round();
+    // === 投影法 dip 偵測 ===
+    final hProj = _computeProjection(gray, true);
+    final vProj = _computeProjection(gray, false);
+    gray.dispose();
+
+    var k = max(3, size ~/ 200);
+    if (k % 2 == 0) k++;
+    final hSmooth = _smoothProfile(hProj, k);
+    final vSmooth = _smoothProfile(vProj, k);
+
+    final minDist = size ~/ 30;
+    final hDips = _findDips(hSmooth, minDist);
+    final vDips = _findDips(vSmooth, minDist);
+
+    // === 合併 Hough + 投影 ===
+    final hCombined = _combinePositions(hDips, hClusters, size * 0.025);
+    final vCombined = _combinePositions(vDips, vClusters, size * 0.025);
+
+    debugPrint('[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
+    debugPrint('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
+    debugPrint('[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
+
+    // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
+    final (hSpacing, hPhase, hInl) =
+        _findBestSpacing(hCombined, size.toDouble());
+    final (vSpacing, vPhase, vInl) =
+        _findBestSpacing(vCombined, size.toDouble());
+
+    // 從最佳間距生成格線
+    final hLines =
+        _generateGridFromSpacing(hPhase, hSpacing, size.toDouble());
+    final vLines =
+        _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
+
+    // 決定棋盤大小
+    final avgCount = (hLines.length + vLines.length) / 2;
     final int boardSize;
-    if (detectedSize <= 11) {
+    if (avgCount <= 11) {
       boardSize = 9;
-    } else if (detectedSize <= 16) {
+    } else if (avgCount <= 16) {
       boardSize = 13;
     } else {
       boardSize = 19;
     }
 
-    hClusters.sort();
-    vClusters.sort();
-
-    final hLines = hClusters.length >= boardSize
-        ? hClusters.sublist(0, boardSize)
-        : _generateUniformPositions(boardSize, warped.rows.toDouble());
-    final vLines = vClusters.length >= boardSize
-        ? vClusters.sublist(0, boardSize)
-        : _generateUniformPositions(boardSize, warped.cols.toDouble());
+    // 修剪/擴展到棋盤大小
+    final hFinal =
+        _trimToSize(hLines, boardSize, hSpacing, size.toDouble());
+    final vFinal =
+        _trimToSize(vLines, boardSize, vSpacing, size.toDouble());
 
     final intersections = <List<cv.Point2f>>[];
     for (int r = 0; r < boardSize; r++) {
       final row = <cv.Point2f>[];
       for (int c = 0; c < boardSize; c++) {
-        row.add(cv.Point2f(vLines[c], hLines[r]));
+        row.add(cv.Point2f(vFinal[c], hFinal[r]));
       }
       intersections.add(row);
     }
 
+    debugPrint(
+        '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
+    debugPrint(
+        '[BoardRecognition] 格線: ${hFinal.length}x${vFinal.length} → ${boardSize}x$boardSize');
     return (boardSize, intersections);
+  }
+
+  /// 暴力搜尋最佳間距：對每個候選間距，找最佳相位，算 inlier 數
+  (double, double, int) _findBestSpacing(List<double> positions, double totalSize) {
+    if (positions.length < 3) {
+      return (totalSize / 14, totalSize * 0.05, 0);
+    }
+
+    final minSp = (totalSize * 0.04).toInt(); // ~19 路最小間距
+    final maxSp = (totalSize * 0.12).toInt(); // ~9 路最大間距
+
+    var bestSpacing = totalSize / 14;
+    var bestPhase = 0.0;
+    var bestScore = 0;
+
+    for (int sp = minSp; sp <= maxSp; sp++) {
+      final tolerance = sp * 0.12;
+      for (final ref in positions) {
+        final phase = ref % sp;
+        var inliers = 0;
+        for (final p in positions) {
+          var remainder = (p - phase) % sp;
+          if (remainder > sp / 2) remainder = sp - remainder;
+          if (remainder < tolerance) inliers++;
+        }
+        if (inliers > bestScore) {
+          bestScore = inliers;
+          bestSpacing = sp.toDouble();
+          bestPhase = phase;
+        }
+      }
+    }
+
+    // 用 inlier 位置精修間距
+    final tolerance = bestSpacing * 0.12;
+    final inlierPos = <double>[];
+    for (final p in positions) {
+      var remainder = (p - bestPhase) % bestSpacing;
+      if (remainder > bestSpacing / 2) remainder = bestSpacing - remainder;
+      if (remainder < tolerance) inlierPos.add(p);
+    }
+    inlierPos.sort();
+
+    if (inlierPos.length >= 2) {
+      final refinedDiffs = <double>[];
+      for (int i = 0; i < inlierPos.length - 1; i++) {
+        final d = inlierPos[i + 1] - inlierPos[i];
+        final n = (d / bestSpacing).round();
+        if (n > 0) refinedDiffs.add(d / n);
+      }
+      if (refinedDiffs.isNotEmpty) {
+        bestSpacing = refinedDiffs.reduce((a, b) => a + b) / refinedDiffs.length;
+      }
+    }
+
+    // 用精修間距重算最佳相位
+    final tol2 = bestSpacing * 0.12;
+    var bestPhase2 = 0.0;
+    var bestScore2 = 0;
+    for (final ref in positions) {
+      final phase = ref % bestSpacing;
+      var inliers = 0;
+      for (final p in positions) {
+        var remainder = (p - phase) % bestSpacing;
+        if (remainder > bestSpacing / 2) remainder = bestSpacing - remainder;
+        if (remainder < tol2) inliers++;
+      }
+      if (inliers > bestScore2) {
+        bestScore2 = inliers;
+        bestPhase2 = phase;
+      }
+    }
+
+    return (bestSpacing, bestPhase2, bestScore2);
+  }
+
+  /// 從間距和相位生成格線位置
+  List<double> _generateGridFromSpacing(double phase, double spacing, double totalSize) {
+    final lines = <double>[];
+    var k = 0;
+    while (phase + k * spacing >= 0) {
+      k--;
+    }
+    k++;
+    while (phase + k * spacing < totalSize) {
+      lines.add(phase + k * spacing);
+      k++;
+    }
+    return lines;
+  }
+
+  /// 修剪或擴展格線到目標數量（置中）
+  List<double> _trimToSize(List<double> lines, int target, double spacing, double totalSize) {
+    final result = List<double>.from(lines);
+    if (result.length > target) {
+      final start = (result.length - target) ~/ 2;
+      return result.sublist(start, start + target);
+    }
+    while (result.length < target) {
+      final nextP = result.last + spacing;
+      final prevP = result.first - spacing;
+      if (nextP < totalSize) {
+        result.add(nextP);
+      } else if (prevP >= 0) {
+        result.insert(0, prevP);
+      } else {
+        break;
+      }
+    }
+    return result.length > target ? result.sublist(0, target) : result;
+  }
+
+  /// 計算單通道影像的行或列平均值（投影）
+  List<double> _computeProjection(cv.Mat singleChannel, bool horizontal) {
+    final rows = singleChannel.rows;
+    final cols = singleChannel.cols;
+    final data = singleChannel.data;
+
+    if (horizontal) {
+      // Row means → 偵測水平格線
+      final proj = List<double>.filled(rows, 0);
+      for (int y = 0; y < rows; y++) {
+        double sum = 0;
+        final offset = y * cols;
+        for (int x = 0; x < cols; x++) {
+          sum += data[offset + x];
+        }
+        proj[y] = sum / cols;
+      }
+      return proj;
+    } else {
+      // Column means → 偵測垂直格線
+      final proj = List<double>.filled(cols, 0);
+      for (int y = 0; y < rows; y++) {
+        final offset = y * cols;
+        for (int x = 0; x < cols; x++) {
+          proj[x] += data[offset + x];
+        }
+      }
+      for (int x = 0; x < cols; x++) {
+        proj[x] /= rows;
+      }
+      return proj;
+    }
+  }
+
+  /// 移動平均平滑
+  List<double> _smoothProfile(List<double> profile, int kernelSize) {
+    final result = List<double>.filled(profile.length, 0);
+    final halfK = kernelSize ~/ 2;
+    for (int i = 0; i < profile.length; i++) {
+      double sum = 0;
+      int count = 0;
+      final start = max(0, i - halfK);
+      final end = min(profile.length - 1, i + halfK);
+      for (int j = start; j <= end; j++) {
+        sum += profile[j];
+        count++;
+      }
+      result[i] = sum / count;
+    }
+    return result;
+  }
+
+  /// 找投影中的低谷（local minima，代表格線位置）
+  List<int> _findDips(List<double> profile, int minDist) {
+    // 計算中位數
+    final sorted = List<double>.from(profile)..sort();
+    final median = sorted[sorted.length ~/ 2];
+
+    final dips = <int>[];
+    for (int i = minDist; i < profile.length - minDist; i++) {
+      // 在 ±minDist 窗口內找最小值
+      double minVal = double.infinity;
+      for (int j = max(0, i - minDist);
+          j <= min(profile.length - 1, i + minDist);
+          j++) {
+        if (profile[j] < minVal) minVal = profile[j];
+      }
+      // 此位置是局部最小，且低於中位數
+      if (profile[i] == minVal && profile[i] < median) {
+        dips.add(i);
+      }
+    }
+    return dips;
+  }
+
+  /// 合併投影 dips 和 Hough clusters，重新聚類
+  List<double> _combinePositions(
+      List<int> dips, List<double> hough, double tolerance) {
+    final allPos = <double>[];
+    for (final d in dips) {
+      allPos.add(d.toDouble());
+    }
+    allPos.addAll(hough);
+    allPos.sort();
+
+    if (allPos.isEmpty) return [];
+    final clusters = <double>[];
+    var cSum = allPos[0];
+    var cCount = 1;
+    for (int i = 1; i < allPos.length; i++) {
+      if (allPos[i] - allPos[i - 1] < tolerance) {
+        cSum += allPos[i];
+        cCount++;
+      } else {
+        clusters.add(cSum / cCount);
+        cSum = allPos[i];
+        cCount = 1;
+      }
+    }
+    clusters.add(cSum / cCount);
+    return clusters;
   }
 
   List<double> _clusterValues(List<double> values, double threshold) {
     if (values.isEmpty) return [];
     values.sort();
-
     final clusters = <double>[];
     var clusterSum = values[0];
     var clusterCount = 1;
-
     for (int i = 1; i < values.length; i++) {
       if (values[i] - values[i - 1] < threshold) {
         clusterSum += values[i];
@@ -293,35 +626,31 @@ class BoardRecognition {
       }
     }
     clusters.add(clusterSum / clusterCount);
-
     return clusters;
   }
 
-  List<double> _generateUniformPositions(int count, double totalSize) {
-    final margin = totalSize * 0.05;
-    final step = (totalSize - 2 * margin) / (count - 1);
-    return List.generate(count, (i) => margin + i * step);
-  }
+  // ============================================================
+  // 步驟 3：棋子偵測
+  // ============================================================
 
-  /// 1D k-means 聚類（k 群）
-  /// 回傳排序後的聚類中心
+  /// 1D k-means 聚類
   List<double> _kMeans1D(List<double> values, int k, {int maxIter = 50}) {
     if (values.isEmpty) return [];
     final sorted = List<double>.from(values)..sort();
-
-    // 初始中心：使用百分位數
     List<double> centers;
     if (k == 3) {
-      final p10 = sorted[(sorted.length * 0.1).floor()];
-      final p50 = sorted[sorted.length ~/ 2];
-      final p90 = sorted[(sorted.length * 0.9).floor().clamp(0, sorted.length - 1)];
-      centers = [p10, p50, p90];
+      centers = [
+        sorted[(sorted.length * 0.1).floor()],
+        sorted[sorted.length ~/ 2],
+        sorted[(sorted.length * 0.9).floor().clamp(0, sorted.length - 1)],
+      ];
     } else {
-      centers = List.generate(k, (i) => sorted[(sorted.length * (i + 1) / (k + 1)).floor()]);
+      centers = List.generate(
+        k, (i) => sorted[(sorted.length * (i + 1) / (k + 1)).floor()],
+      );
     }
 
     for (int iter = 0; iter < maxIter; iter++) {
-      // 分配每個值到最近的中心
       final clusters = List.generate(k, (_) => <double>[]);
       for (final v in values) {
         int bestIdx = 0;
@@ -335,99 +664,17 @@ class BoardRecognition {
         }
         clusters[bestIdx].add(v);
       }
-
-      // 重算中心
       bool converged = true;
       for (int i = 0; i < k; i++) {
         if (clusters[i].isEmpty) continue;
-        final newCenter = clusters[i].reduce((a, b) => a + b) / clusters[i].length;
-        if ((newCenter - centers[i]).abs() > 0.5) {
-          converged = false;
-        }
-        centers[i] = newCenter;
+        final nc = clusters[i].reduce((a, b) => a + b) / clusters[i].length;
+        if ((nc - centers[i]).abs() > 0.5) converged = false;
+        centers[i] = nc;
       }
-
       if (converged) break;
     }
-
     centers.sort();
     return centers;
-  }
-
-  /// 計算自適應閾值，處理邊界情況（<3 有效群體）
-  ({double thresholdBB, double thresholdBW, double satThreshold})
-      _computeAdaptiveThresholds(
-    List<double> centers,
-    List<_IntersectionSample> samples,
-  ) {
-    if (centers.length < 2) {
-      // 只有一個群體，用固定 fallback
-      return (thresholdBB: 80, thresholdBW: 180, satThreshold: 40);
-    }
-
-    // 合併距離過近的群體（< 15% V 值全距）
-    final vValues = samples.map((s) => s.avgV).toList();
-    final vRange = (vValues.reduce(max) - vValues.reduce(min));
-    final mergeThreshold = vRange * 0.15;
-
-    final merged = <double>[centers[0]];
-    final memberCounts = <int>[1];
-    for (int i = 1; i < centers.length; i++) {
-      if ((centers[i] - merged.last).abs() < mergeThreshold) {
-        // 合併：取加權平均
-        merged.last = (merged.last * memberCounts.last + centers[i]) / (memberCounts.last + 1);
-        memberCounts.last++;
-      } else {
-        merged.add(centers[i]);
-        memberCounts.add(1);
-      }
-    }
-
-    double thresholdBB;
-    double thresholdBW;
-
-    if (merged.length >= 3) {
-      // 三群：黑、盤、白
-      thresholdBB = (merged[0] + merged[1]) / 2;
-      thresholdBW = (merged[1] + merged[2]) / 2;
-    } else if (merged.length == 2) {
-      // 兩群：可能無白子或無黑子
-      final gap = merged[1] - merged[0];
-      if (merged[0] < 100) {
-        // 可能是黑+盤（無白子）
-        thresholdBB = (merged[0] + merged[1]) / 2;
-        thresholdBW = merged[1] + gap * 0.5;
-      } else {
-        // 可能是盤+白（無黑子）
-        thresholdBB = merged[0] - gap * 0.5;
-        thresholdBW = (merged[0] + merged[1]) / 2;
-      }
-    } else {
-      thresholdBB = 80;
-      thresholdBW = 180;
-    }
-
-    // 自適應飽和度門檻：取亮群體（V > thresholdBW）的飽和度中位數 × 1.5
-    final brightSamples = samples.where((s) => s.avgV > thresholdBW).toList();
-    double satThreshold;
-    if (brightSamples.length >= 2) {
-      final satValues = brightSamples.map((s) => s.avgS).toList()..sort();
-      final medianSat = satValues[satValues.length ~/ 2];
-      satThreshold = medianSat * 1.5;
-      // 至少給 30，避免過度嚴格
-      satThreshold = max(satThreshold, 30);
-    } else {
-      // fallback：使用所有交叉點飽和度的全局統計
-      final allSat = samples.map((s) => s.avgS).toList()..sort();
-      satThreshold = allSat[allSat.length ~/ 2] * 0.8;
-      satThreshold = max(satThreshold, 30);
-    }
-
-    return (
-      thresholdBB: thresholdBB,
-      thresholdBW: thresholdBW,
-      satThreshold: satThreshold,
-    );
   }
 
   List<List<StoneColor>> _detectStones(
@@ -445,8 +692,6 @@ class BoardRecognition {
     );
 
     final sampleRadius = (warped.cols / boardSize * 0.2).round();
-
-    // === 第一階段：收集所有交叉點的特徵值 ===
     final samples = <_IntersectionSample>[];
 
     for (int r = 0; r < boardSize; r++) {
@@ -457,7 +702,7 @@ class BoardRecognition {
 
         var totalV = 0.0;
         var totalS = 0.0;
-        var totalV2 = 0.0; // for stdV
+        var totalV2 = 0.0;
         var sampleCount = 0;
 
         for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
@@ -479,40 +724,46 @@ class BoardRecognition {
         final stdV = sqrt(max(0, variance));
 
         samples.add(_IntersectionSample(
-          row: r,
-          col: c,
-          avgV: avgV,
-          avgS: avgS,
-          stdV: stdV,
+          row: r, col: c,
+          avgV: avgV, avgS: avgS, stdV: stdV,
         ));
       }
     }
-
     hsv.dispose();
 
-    // 收集 V 值統計
+    // === V/S 值統計 ===
     final vValues = samples.map((s) => s.avgV).toList();
-    debug.vMin = vValues.reduce(min);
-    debug.vMax = vValues.reduce(max);
-    debug.vMean = vValues.reduce((a, b) => a + b) / vValues.length;
+    final sValues = samples.map((s) => s.avgS).toList();
+    final sortedV = List<double>.from(vValues)..sort();
+    final sortedS = List<double>.from(sValues)..sort();
+    debug.vMin = sortedV.first;
+    debug.vMax = sortedV.last;
+    final boardMedianS = sortedS[sortedS.length ~/ 2];
 
-    // === 第二階段：1D k-means 聚類 ===
+    // === k-means 找三群 + 安全上下限 ===
     final centers = _kMeans1D(vValues, 3);
     debug.clusterCenters = List.from(centers);
 
-    // === 計算自適應閾值 ===
-    final thresholds = _computeAdaptiveThresholds(centers, samples);
-    debug.thresholdBlackBoard = thresholds.thresholdBB;
-    debug.thresholdBoardWhite = thresholds.thresholdBW;
-    debug.adaptiveSatThreshold = thresholds.satThreshold;
+    // k-means 中點作為閾值，加上安全範圍
+    var thresholdBB = (centers[0] + centers[1]) / 2;
+    var thresholdBW = (centers[1] + centers[2]) / 2;
+    thresholdBB = min(thresholdBB, 110.0);
+    thresholdBW = max(thresholdBW, 170.0);
+    debug.thresholdBlackBoard = thresholdBB;
+    debug.thresholdBoardWhite = thresholdBW;
 
-    // === 第三階段：用自適應閾值分類每個交叉點 ===
+    // 棋子（黑白皆）為無彩色，飽和度遠低於棋盤（暖色木板）
+    final satLimitBlack = min(boardMedianS * 0.7, 80.0);
+    final satLimitWhite = min(boardMedianS * 0.5, 60.0);
+    debug.satLimitBlack = satLimitBlack;
+    debug.satLimitWhite = satLimitWhite;
+
+    // === 分類 ===
     for (final sample in samples) {
-      if (sample.avgV < thresholds.thresholdBB) {
+      if (sample.avgV < thresholdBB && sample.avgS < satLimitBlack) {
         grid[sample.row][sample.col] = StoneColor.black;
         debug.blackCount++;
-      } else if (sample.avgV > thresholds.thresholdBW &&
-          sample.avgS < thresholds.satThreshold) {
+      } else if (sample.avgV > thresholdBW && sample.avgS < satLimitWhite) {
         grid[sample.row][sample.col] = StoneColor.white;
         debug.whiteCount++;
       } else {
@@ -522,7 +773,6 @@ class BoardRecognition {
 
     lastDebugInfo = debug;
     debugPrint(debug.toString());
-
     return grid;
   }
 }
