@@ -363,12 +363,12 @@ class BoardRecognition {
     final vLines =
         _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
 
-    // 決定棋盤大小
-    final avgCount = (hLines.length + vLines.length) / 2;
+    // 決定棋盤大小：用較多的一邊向上取整到標準尺寸
+    final maxLines = hLines.length > vLines.length ? hLines.length : vLines.length;
     final int boardSize;
-    if (avgCount <= 11) {
+    if (maxLines <= 10) {
       boardSize = 9;
-    } else if (avgCount <= 16) {
+    } else if (maxLines <= 14) {
       boardSize = 13;
     } else {
       boardSize = 19;
@@ -392,7 +392,7 @@ class BoardRecognition {
     debugPrint(
         '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
     debugPrint(
-        '[BoardRecognition] 格線: ${hFinal.length}x${vFinal.length} → ${boardSize}x$boardSize');
+        '[BoardRecognition] 格線: ${hLines.length}x${vLines.length} → ${boardSize}x$boardSize');
     return (boardSize, intersections);
   }
 
@@ -427,6 +427,34 @@ class BoardRecognition {
       }
     }
 
+    // Harmonic 修正：如果 2× 間距也有類似的 inlier 數，
+    // 說明當前結果是半間距（harmonic），改用 2×
+    final doubleSp = (bestSpacing * 2).round();
+    if (doubleSp <= maxSp) {
+      final dTol = doubleSp * 0.12;
+      var dBestInliers = 0;
+      var dBestPhase = 0.0;
+      for (final ref in positions) {
+        final phase = ref % doubleSp;
+        var inliers = 0;
+        for (final p in positions) {
+          var remainder = (p - phase) % doubleSp;
+          if (remainder > doubleSp / 2) remainder = doubleSp - remainder;
+          if (remainder < dTol) inliers++;
+        }
+        if (inliers > dBestInliers) {
+          dBestInliers = inliers;
+          dBestPhase = phase;
+        }
+      }
+      // 半間距的 inlier 數幾乎相同 → 是 harmonic，改用全間距
+      if (dBestInliers >= bestScore * 0.8) {
+        bestSpacing = doubleSp.toDouble();
+        bestPhase = dBestPhase;
+        bestScore = dBestInliers;
+      }
+    }
+
     // 用 inlier 位置精修間距
     final tolerance = bestSpacing * 0.12;
     final inlierPos = <double>[];
@@ -452,7 +480,7 @@ class BoardRecognition {
     // 用精修間距重算最佳相位
     final tol2 = bestSpacing * 0.12;
     var bestPhase2 = 0.0;
-    var bestScore2 = 0;
+    var bestInliers2 = 0;
     for (final ref in positions) {
       final phase = ref % bestSpacing;
       var inliers = 0;
@@ -461,13 +489,13 @@ class BoardRecognition {
         if (remainder > bestSpacing / 2) remainder = bestSpacing - remainder;
         if (remainder < tol2) inliers++;
       }
-      if (inliers > bestScore2) {
-        bestScore2 = inliers;
+      if (inliers > bestInliers2) {
+        bestInliers2 = inliers;
         bestPhase2 = phase;
       }
     }
 
-    return (bestSpacing, bestPhase2, bestScore2);
+    return (bestSpacing, bestPhase2, bestInliers2);
   }
 
   /// 從間距和相位生成格線位置
@@ -492,6 +520,7 @@ class BoardRecognition {
       final start = (result.length - target) ~/ 2;
       return result.sublist(start, start + target);
     }
+    // 始終擴展到 target：優先在邊界內，必要時允許超出
     while (result.length < target) {
       final nextP = result.last + spacing;
       final prevP = result.first - spacing;
@@ -499,11 +528,13 @@ class BoardRecognition {
         result.add(nextP);
       } else if (prevP >= 0) {
         result.insert(0, prevP);
+      } else if (nextP - totalSize < result.first.abs()) {
+        result.add(nextP);
       } else {
-        break;
+        result.insert(0, prevP);
       }
     }
-    return result.length > target ? result.sublist(0, target) : result;
+    return result.sublist(0, target);
   }
 
   /// 計算單通道影像的行或列平均值（投影）
@@ -697,8 +728,17 @@ class BoardRecognition {
     for (int r = 0; r < boardSize; r++) {
       for (int c = 0; c < boardSize; c++) {
         final pt = intersections[r][c];
-        final x = pt.x.round().clamp(0, warped.cols - 1);
-        final y = pt.y.round().clamp(0, warped.rows - 1);
+        final x = pt.x.round();
+        final y = pt.y.round();
+
+        // 超出影像邊界的交叉點標記為棋盤色（不會被判為棋子）
+        if (x < sampleRadius || x >= warped.cols - sampleRadius ||
+            y < sampleRadius || y >= warped.rows - sampleRadius) {
+          samples.add(_IntersectionSample(
+            row: r, col: c, avgV: 160.0, avgS: 120.0, stdV: 0.0,
+          ));
+          continue;
+        }
 
         var totalV = 0.0;
         var totalS = 0.0;

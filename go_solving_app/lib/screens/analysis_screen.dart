@@ -62,7 +62,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         });
         _runAnalysis();
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('[AnalysisScreen] 辨識錯誤: $e\n$stackTrace');
       if (mounted) {
         setState(() {
           _isRecognizing = false;
