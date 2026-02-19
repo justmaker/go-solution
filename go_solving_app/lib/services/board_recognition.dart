@@ -311,16 +311,95 @@ class BoardRecognition {
   (int, List<List<cv.Point2f>>) _detectGridLines(cv.Mat warped) {
     final size = warped.rows; // 正方形影像
 
-    // === Hough 線偵測 ===
-    final gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
-    final blurred = cv.gaussianBlur(gray, (3, 3), 0);
-    final edges = cv.canny(blurred, 50, 150);
+    // 1. 初步 Hough 偵測用於計算旋轉校正
+    var gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+    var blurred = cv.gaussianBlur(gray, (3, 3), 0);
+    var edges = cv.canny(blurred, 50, 150);
 
-    final linesMat = cv.HoughLinesP(
+    // 寬鬆參數以捕捉更多線段
+    var linesMat = cv.HoughLinesP(
       edges, 1, pi / 180,
       50,
-      minLineLength: warped.cols * 0.2,
-      maxLineGap: warped.cols / 15,
+      minLineLength: warped.cols * 0.1, // 降低最小長度
+      maxLineGap: warped.cols / 10,     // 增加最大間隙
+    );
+
+    // 計算旋轉角度
+    final angles = <double>[];
+    if (linesMat.rows > 0) {
+      for (int i = 0; i < linesMat.rows; i++) {
+        final line = linesMat.at<cv.Vec4i>(i, 0);
+        final x1 = line.val1.toDouble();
+        final y1 = line.val2.toDouble();
+        final x2 = line.val3.toDouble();
+        final y2 = line.val4.toDouble();
+        final dx = x2 - x1;
+        final dy = y2 - y1;
+        if (dx == 0) continue;
+        final angle = atan(dy / dx);
+
+        // 收集接近水平或垂直的角度偏差
+        if (angle.abs() < pi / 6) {
+          angles.add(angle);
+        } else if (angle.abs() > pi / 3) {
+          if (angle > 0) {
+            angles.add(angle - pi / 2);
+          } else {
+            angles.add(angle + pi / 2);
+          }
+        }
+      }
+    }
+    linesMat.dispose();
+
+    // 應用旋轉校正
+    if (angles.isNotEmpty) {
+      angles.sort();
+      final medianAngle = angles[angles.length ~/ 2];
+      if (medianAngle.abs() > 0.005) { // > 0.3度才校正
+        debugPrint('[BoardRecognition] 應用旋轉校正: ${(medianAngle * 180 / pi).toStringAsFixed(2)}度');
+        final center = cv.Point2f(size / 2, size / 2);
+        final rotMat = cv.getRotationMatrix2D(center, medianAngle * 180 / pi, 1.0);
+        final rotated = cv.warpAffine(warped, rotMat, (size, size), borderMode: cv.BORDER_REPLICATE);
+
+        // 更新 warped (注意：這裡不能直接替換 warped 引用，因為是參數，但我們可以操作內容或更新局部變數)
+        // 這裡我們更新 gray/blurred/edges 用於後續步驟
+        warped.copyTo(warped); // 保持 warped 不變? 不，我们需要后续步骤使用校正后的图像
+        // Dart参数传递是引用传递，但这就意味着外部的 warped 不会被修改，这很好。
+        // 但我们需要修改 warped 对应的处理结果
+
+        // 為了簡單起見，我們更新 gray/blurred/edges，並在後續使用 rotWarped 如果需要
+        // 實際上，後續步驟 `_detectStones` 需要校正後的 `warped`。
+        // 所以我們必須更新 `warped` 變數。
+        // 但 Dart 中參數是 final 的... 不，這裡 `cv.Mat warped` 不是 final。
+        // 但我們無法修改調用者的 `warped`。
+        // 不過 `_detectGridLines` 返回 intersections。
+        // 如果我們在這裡旋轉了，返回的 intersection 座標是相對於旋轉後的影像。
+        // 但外部的 `warped` 還是舊的。這會導致 `_detectStones` 取樣錯誤！
+
+        // 解決方案：將旋轉邏輯移到 `_detectGridLines` 之外，或讓 `_detectGridLines` 返回校正後的 Mat。
+        // 考慮到代碼結構，我們可以在這裡進行校正，並將 warped 的內容替換（copyTo）。
+        rotated.copyTo(warped); //這會修改外部 warped 物件的內容！
+
+        rotMat.dispose();
+        rotated.dispose();
+
+        // 重新計算特徵
+        gray.dispose();
+        blurred.dispose();
+        edges.dispose();
+        gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY);
+        blurred = cv.gaussianBlur(gray, (3, 3), 0);
+        edges = cv.canny(blurred, 50, 150);
+      }
+    }
+
+    // === 正式 Hough 線偵測 ===
+    linesMat = cv.HoughLinesP(
+      edges, 1, pi / 180,
+      50,
+      minLineLength: warped.cols * 0.1,
+      maxLineGap: warped.cols / 10,
     );
 
     blurred.dispose();
@@ -447,6 +526,18 @@ class BoardRecognition {
     for (int sp = minSp; sp <= maxSp; sp++) {
       final tolerance = sp * 0.12;
       final spSqrt = sqrt(sp.toDouble());
+
+      // 對標準棋盤尺寸給予加分
+      final ratio = totalSize / sp;
+      var scoreMultiplier = 1.0;
+      if (ratio >= 18 && ratio <= 20) { // 19x19
+        scoreMultiplier = 1.2;
+      } else if (ratio >= 12 && ratio <= 14) { // 13x13
+        scoreMultiplier = 1.1;
+      } else if (ratio >= 8 && ratio <= 10) { // 9x9
+        scoreMultiplier = 1.1;
+      }
+
       for (final ref in positions) {
         final phase = ref % sp;
         var inliers = 0;
@@ -455,7 +546,8 @@ class BoardRecognition {
           if (remainder > sp / 2) remainder = sp - remainder;
           if (remainder < tolerance) inliers++;
         }
-        final score = inliers * spSqrt;
+        var score = inliers * spSqrt * scoreMultiplier;
+
         if (score > bestScore) {
           bestScore = score;
           bestSpacing = sp.toDouble();
@@ -673,50 +765,6 @@ class BoardRecognition {
   // 步驟 3：棋子偵測
   // ============================================================
 
-  /// 1D k-means 聚類
-  List<double> _kMeans1D(List<double> values, int k, {int maxIter = 50}) {
-    if (values.isEmpty) return [];
-    final sorted = List<double>.from(values)..sort();
-    List<double> centers;
-    if (k == 3) {
-      centers = [
-        sorted[(sorted.length * 0.1).floor()],
-        sorted[sorted.length ~/ 2],
-        sorted[(sorted.length * 0.9).floor().clamp(0, sorted.length - 1)],
-      ];
-    } else {
-      centers = List.generate(
-        k, (i) => sorted[(sorted.length * (i + 1) / (k + 1)).floor()],
-      );
-    }
-
-    for (int iter = 0; iter < maxIter; iter++) {
-      final clusters = List.generate(k, (_) => <double>[]);
-      for (final v in values) {
-        int bestIdx = 0;
-        double bestDist = (v - centers[0]).abs();
-        for (int i = 1; i < k; i++) {
-          final dist = (v - centers[i]).abs();
-          if (dist < bestDist) {
-            bestDist = dist;
-            bestIdx = i;
-          }
-        }
-        clusters[bestIdx].add(v);
-      }
-      bool converged = true;
-      for (int i = 0; i < k; i++) {
-        if (clusters[i].isEmpty) continue;
-        final nc = clusters[i].reduce((a, b) => a + b) / clusters[i].length;
-        if ((nc - centers[i]).abs() > 0.5) converged = false;
-        centers[i] = nc;
-      }
-      if (converged) break;
-    }
-    centers.sort();
-    return centers;
-  }
-
   List<List<StoneColor>> _detectStones(
     cv.Mat warped,
     int boardSize,
@@ -740,11 +788,11 @@ class BoardRecognition {
         final x = pt.x.round();
         final y = pt.y.round();
 
-        // 超出影像邊界的交叉點標記為棋盤色（不會被判為棋子）
+        // 超出影像邊界的交叉點標記為無效（-1.0），統計時排除，分類時視為 Empty
         if (x < sampleRadius || x >= warped.cols - sampleRadius ||
             y < sampleRadius || y >= warped.rows - sampleRadius) {
           samples.add(_IntersectionSample(
-            row: r, col: c, avgV: 160.0, avgS: 120.0, stdV: 0.0,
+            row: r, col: c, avgV: -1.0, avgS: 0.0, stdV: 0.0,
           ));
           continue;
         }
@@ -780,24 +828,53 @@ class BoardRecognition {
     }
     hsv.dispose();
 
-    // === V/S 值統計 ===
-    final vValues = samples.map((s) => s.avgV).toList();
-    final sValues = samples.map((s) => s.avgS).toList();
-    final sortedV = List<double>.from(vValues)..sort();
+    // === V/S 值統計 (排除無效樣本) ===
+    final validSamples = samples.where((s) => s.avgV >= 0).toList();
+    if (validSamples.isEmpty) return grid; // Should not happen
+
+    final vValues = validSamples.map((s) => s.avgV).toList();
+    final sValues = validSamples.map((s) => s.avgS).toList();
+
+    // 簡單統計
+    var minV = 255.0;
+    var maxV = 0.0;
+    for(final v in vValues) {
+      if(v < minV) minV = v;
+      if(v > maxV) maxV = v;
+    }
+    debug.vMin = minV;
+    debug.vMax = maxV;
+
     final sortedS = List<double>.from(sValues)..sort();
-    debug.vMin = sortedV.first;
-    debug.vMax = sortedV.last;
-    final boardMedianS = sortedS[sortedS.length ~/ 2];
+    final boardMedianS = sortedS.isNotEmpty ? sortedS[sortedS.length ~/ 2] : 0.0;
 
-    // === k-means 找三群 + 安全上下限 ===
-    final centers = _kMeans1D(vValues, 3);
-    debug.clusterCenters = List.from(centers);
+    // === Mode-based 自適應閾值 ===
+    // 計算 V 直方圖找主峰 (Mode)，假設主峰為棋盤顏色
+    const binSize = 8;
+    final bins = List.filled(256 ~/ binSize + 1, 0);
+    for (final v in vValues) {
+       bins[v.toInt() ~/ binSize]++;
+    }
+    var maxBin = 0;
+    var maxCount = 0;
+    for (int i = 0; i < bins.length; i++) {
+        if (bins[i] > maxCount) {
+            maxCount = bins[i];
+            maxBin = i;
+        }
+    }
+    final modeV = (maxBin * binSize + binSize / 2).toDouble();
+    debug.clusterCenters = [modeV]; // 借用欄位顯示 Mode
 
-    // k-means 中點作為閾值，加上安全範圍
-    var thresholdBB = (centers[0] + centers[1]) / 2;
-    var thresholdBW = (centers[1] + centers[2]) / 2;
-    thresholdBB = min(thresholdBB, 110.0);
-    thresholdBW = max(thresholdBW, 170.0);
+    // 基於 Mode 設定黑白閾值
+    // 黑子顯著暗於棋盤，白子顯著亮於棋盤
+    var thresholdBB = modeV - 60.0;
+    var thresholdBW = modeV + 40.0;
+
+    // 安全鉗位：避免閾值過於極端
+    thresholdBB = max(thresholdBB, 50.0);
+    thresholdBW = min(thresholdBW, 220.0);
+
     debug.thresholdBlackBoard = thresholdBB;
     debug.thresholdBoardWhite = thresholdBW;
 
@@ -809,6 +886,12 @@ class BoardRecognition {
 
     // === 分類 ===
     for (final sample in samples) {
+      if (sample.avgV < 0) {
+        // 無效樣本（出界）視為空
+        debug.emptyCount++;
+        continue;
+      }
+
       if (sample.avgV < thresholdBB && sample.avgS < satLimitBlack) {
         grid[sample.row][sample.col] = StoneColor.black;
         debug.blackCount++;
