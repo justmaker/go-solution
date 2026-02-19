@@ -1,9 +1,62 @@
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 import '../models/board_state.dart';
 
+/// 交叉點取樣資料
+class _IntersectionSample {
+  final int row;
+  final int col;
+  final double avgV;
+  final double avgS;
+  final double stdV;
+
+  _IntersectionSample({
+    required this.row,
+    required this.col,
+    required this.avgV,
+    required this.avgS,
+    required this.stdV,
+  });
+}
+
+/// 辨識管線除錯資訊
+class RecognitionDebugInfo {
+  int contourCount = 0;
+  int horizontalLineCount = 0;
+  int verticalLineCount = 0;
+  int detectedBoardSize = 0;
+  List<double> clusterCenters = [];
+  double thresholdBlackBoard = 0;
+  double thresholdBoardWhite = 0;
+  double adaptiveSatThreshold = 0;
+  int blackCount = 0;
+  int whiteCount = 0;
+  int emptyCount = 0;
+  double vMin = 0;
+  double vMax = 0;
+  double vMean = 0;
+
+  @override
+  String toString() {
+    return '''
+=== 棋盤辨識除錯 ===
+輪廓數: $contourCount
+水平線: $horizontalLineCount, 垂直線: $verticalLineCount
+棋盤大小: ${detectedBoardSize}x$detectedBoardSize
+V 值範圍: ${vMin.toStringAsFixed(1)} ~ ${vMax.toStringAsFixed(1)}, 平均: ${vMean.toStringAsFixed(1)}
+聚類中心: ${clusterCenters.map((c) => c.toStringAsFixed(1)).join(', ')}
+閾值: 黑/盤=${thresholdBlackBoard.toStringAsFixed(1)}, 盤/白=${thresholdBoardWhite.toStringAsFixed(1)}
+飽和度閾值: ${adaptiveSatThreshold.toStringAsFixed(1)}
+結果: 黑=$blackCount, 白=$whiteCount, 空=$emptyCount
+====================''';
+  }
+}
+
 /// OpenCV 棋盤辨識服務
 class BoardRecognition {
+  /// 最近一次辨識的除錯資訊
+  RecognitionDebugInfo? lastDebugInfo;
   /// 從影像檔案辨識棋盤狀態
   Future<BoardState> recognizeFromImage(String imagePath) async {
     // 1. 讀取影像
@@ -250,11 +303,141 @@ class BoardRecognition {
     return List.generate(count, (i) => margin + i * step);
   }
 
+  /// 1D k-means 聚類（k 群）
+  /// 回傳排序後的聚類中心
+  List<double> _kMeans1D(List<double> values, int k, {int maxIter = 50}) {
+    if (values.isEmpty) return [];
+    final sorted = List<double>.from(values)..sort();
+
+    // 初始中心：使用百分位數
+    List<double> centers;
+    if (k == 3) {
+      final p10 = sorted[(sorted.length * 0.1).floor()];
+      final p50 = sorted[sorted.length ~/ 2];
+      final p90 = sorted[(sorted.length * 0.9).floor().clamp(0, sorted.length - 1)];
+      centers = [p10, p50, p90];
+    } else {
+      centers = List.generate(k, (i) => sorted[(sorted.length * (i + 1) / (k + 1)).floor()]);
+    }
+
+    for (int iter = 0; iter < maxIter; iter++) {
+      // 分配每個值到最近的中心
+      final clusters = List.generate(k, (_) => <double>[]);
+      for (final v in values) {
+        int bestIdx = 0;
+        double bestDist = (v - centers[0]).abs();
+        for (int i = 1; i < k; i++) {
+          final dist = (v - centers[i]).abs();
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+          }
+        }
+        clusters[bestIdx].add(v);
+      }
+
+      // 重算中心
+      bool converged = true;
+      for (int i = 0; i < k; i++) {
+        if (clusters[i].isEmpty) continue;
+        final newCenter = clusters[i].reduce((a, b) => a + b) / clusters[i].length;
+        if ((newCenter - centers[i]).abs() > 0.5) {
+          converged = false;
+        }
+        centers[i] = newCenter;
+      }
+
+      if (converged) break;
+    }
+
+    centers.sort();
+    return centers;
+  }
+
+  /// 計算自適應閾值，處理邊界情況（<3 有效群體）
+  ({double thresholdBB, double thresholdBW, double satThreshold})
+      _computeAdaptiveThresholds(
+    List<double> centers,
+    List<_IntersectionSample> samples,
+  ) {
+    if (centers.length < 2) {
+      // 只有一個群體，用固定 fallback
+      return (thresholdBB: 80, thresholdBW: 180, satThreshold: 40);
+    }
+
+    // 合併距離過近的群體（< 15% V 值全距）
+    final vValues = samples.map((s) => s.avgV).toList();
+    final vRange = (vValues.reduce(max) - vValues.reduce(min));
+    final mergeThreshold = vRange * 0.15;
+
+    final merged = <double>[centers[0]];
+    final memberCounts = <int>[1];
+    for (int i = 1; i < centers.length; i++) {
+      if ((centers[i] - merged.last).abs() < mergeThreshold) {
+        // 合併：取加權平均
+        merged.last = (merged.last * memberCounts.last + centers[i]) / (memberCounts.last + 1);
+        memberCounts.last++;
+      } else {
+        merged.add(centers[i]);
+        memberCounts.add(1);
+      }
+    }
+
+    double thresholdBB;
+    double thresholdBW;
+
+    if (merged.length >= 3) {
+      // 三群：黑、盤、白
+      thresholdBB = (merged[0] + merged[1]) / 2;
+      thresholdBW = (merged[1] + merged[2]) / 2;
+    } else if (merged.length == 2) {
+      // 兩群：可能無白子或無黑子
+      final gap = merged[1] - merged[0];
+      if (merged[0] < 100) {
+        // 可能是黑+盤（無白子）
+        thresholdBB = (merged[0] + merged[1]) / 2;
+        thresholdBW = merged[1] + gap * 0.5;
+      } else {
+        // 可能是盤+白（無黑子）
+        thresholdBB = merged[0] - gap * 0.5;
+        thresholdBW = (merged[0] + merged[1]) / 2;
+      }
+    } else {
+      thresholdBB = 80;
+      thresholdBW = 180;
+    }
+
+    // 自適應飽和度門檻：取亮群體（V > thresholdBW）的飽和度中位數 × 1.5
+    final brightSamples = samples.where((s) => s.avgV > thresholdBW).toList();
+    double satThreshold;
+    if (brightSamples.length >= 2) {
+      final satValues = brightSamples.map((s) => s.avgS).toList()..sort();
+      final medianSat = satValues[satValues.length ~/ 2];
+      satThreshold = medianSat * 1.5;
+      // 至少給 30，避免過度嚴格
+      satThreshold = max(satThreshold, 30);
+    } else {
+      // fallback：使用所有交叉點飽和度的全局統計
+      final allSat = samples.map((s) => s.avgS).toList()..sort();
+      satThreshold = allSat[allSat.length ~/ 2] * 0.8;
+      satThreshold = max(satThreshold, 30);
+    }
+
+    return (
+      thresholdBB: thresholdBB,
+      thresholdBW: thresholdBW,
+      satThreshold: satThreshold,
+    );
+  }
+
   List<List<StoneColor>> _detectStones(
     cv.Mat warped,
     int boardSize,
     List<List<cv.Point2f>> intersections,
   ) {
+    final debug = RecognitionDebugInfo();
+    debug.detectedBoardSize = boardSize;
+
     final hsv = cv.cvtColor(warped, cv.COLOR_BGR2HSV);
     final grid = List.generate(
       boardSize,
@@ -262,6 +445,9 @@ class BoardRecognition {
     );
 
     final sampleRadius = (warped.cols / boardSize * 0.2).round();
+
+    // === 第一階段：收集所有交叉點的特徵值 ===
+    final samples = <_IntersectionSample>[];
 
     for (int r = 0; r < boardSize; r++) {
       for (int c = 0; c < boardSize; c++) {
@@ -271,6 +457,7 @@ class BoardRecognition {
 
         var totalV = 0.0;
         var totalS = 0.0;
+        var totalV2 = 0.0; // for stdV
         var sampleCount = 0;
 
         for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
@@ -279,23 +466,63 @@ class BoardRecognition {
             final sy = (y + dy).clamp(0, warped.rows - 1);
             final pixel = hsv.atPixel(sy, sx);
             totalS += pixel[1];
-            totalV += pixel[2];
+            final v = pixel[2].toDouble();
+            totalV += v;
+            totalV2 += v * v;
             sampleCount++;
           }
         }
 
         final avgV = totalV / sampleCount;
         final avgS = totalS / sampleCount;
+        final variance = (totalV2 / sampleCount) - (avgV * avgV);
+        final stdV = sqrt(max(0, variance));
 
-        if (avgV < 80) {
-          grid[r][c] = StoneColor.black;
-        } else if (avgV > 180 && avgS < 40) {
-          grid[r][c] = StoneColor.white;
-        }
+        samples.add(_IntersectionSample(
+          row: r,
+          col: c,
+          avgV: avgV,
+          avgS: avgS,
+          stdV: stdV,
+        ));
       }
     }
 
     hsv.dispose();
+
+    // 收集 V 值統計
+    final vValues = samples.map((s) => s.avgV).toList();
+    debug.vMin = vValues.reduce(min);
+    debug.vMax = vValues.reduce(max);
+    debug.vMean = vValues.reduce((a, b) => a + b) / vValues.length;
+
+    // === 第二階段：1D k-means 聚類 ===
+    final centers = _kMeans1D(vValues, 3);
+    debug.clusterCenters = List.from(centers);
+
+    // === 計算自適應閾值 ===
+    final thresholds = _computeAdaptiveThresholds(centers, samples);
+    debug.thresholdBlackBoard = thresholds.thresholdBB;
+    debug.thresholdBoardWhite = thresholds.thresholdBW;
+    debug.adaptiveSatThreshold = thresholds.satThreshold;
+
+    // === 第三階段：用自適應閾值分類每個交叉點 ===
+    for (final sample in samples) {
+      if (sample.avgV < thresholds.thresholdBB) {
+        grid[sample.row][sample.col] = StoneColor.black;
+        debug.blackCount++;
+      } else if (sample.avgV > thresholds.thresholdBW &&
+          sample.avgS < thresholds.satThreshold) {
+        grid[sample.row][sample.col] = StoneColor.white;
+        debug.whiteCount++;
+      } else {
+        debug.emptyCount++;
+      }
+    }
+
+    lastDebugInfo = debug;
+    debugPrint(debug.toString());
+
     return grid;
   }
 }

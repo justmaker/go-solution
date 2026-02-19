@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/board_state.dart';
 import '../models/analysis_result.dart';
@@ -51,6 +52,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     try {
       final recognition = BoardRecognition();
       final boardState = await recognition.recognizeFromImage(imagePath);
+      if (recognition.lastDebugInfo != null) {
+        debugPrint(recognition.lastDebugInfo.toString());
+      }
       if (mounted) {
         setState(() {
           _boardState = boardState;
