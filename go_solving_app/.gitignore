@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# iOS CocoaPods lock
+ios/Podfile.lock
+
+# KataGo model intermediate files
+lionffen_b6c64.txt
+lionffen_b6c64.txt.gz
