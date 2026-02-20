@@ -165,31 +165,42 @@ def mish(x):
 
 # ─── Global pooling helpers ─────────────────────────────────────────────────
 
-def kata_gpool(x):
+def kata_gpool(x, mask):
     """KataGo global pooling for trunk gpool blocks and policy head.
     Output [B, 3*C]: mean, mean*(sqrt(N)-14)/10, max
+
+    mask: [B, 1, H, W] — board mask from input_binary channel 0.
+    N is computed dynamically from mask so ONNX traces correct ops
+    for any board size (not just 19×19).
     """
-    B, C, H, W = x.shape
-    N = float(H * W)
-    sqrt_N = N ** 0.5
-    mean = x.sum(dim=(2, 3)) / N                        # [B, C]
-    max_val = x.amax(dim=(2, 3))                         # [B, C]
-    scaled_mean = mean * (sqrt_N - 14.0) / 10.0          # [B, C]
-    return torch.cat([mean, scaled_mean, max_val], dim=1) # [B, 3*C]
+    # N = number of valid positions (dynamic per batch element)
+    N = mask.sum(dim=(2, 3), keepdim=False).clamp(min=1.0)  # [B, 1]
+    sqrt_N = torch.sqrt(N)
+    masked_x = x * mask                                      # zero out padding
+    mean = masked_x.sum(dim=(2, 3)) / N                      # [B, C]
+    scaled_mean = mean * (sqrt_N - 14.0) / 10.0              # [B, C]
+    # For max: fill padded positions with -inf so they don't win
+    masked_for_max = x.masked_fill(mask.expand_as(x) < 0.5, float('-inf'))
+    max_val = masked_for_max.amax(dim=(2, 3))                # [B, C]
+    return torch.cat([mean, scaled_mean, max_val], dim=1)    # [B, 3*C]
 
 
-def kata_value_gpool(x):
+def kata_value_gpool(x, mask):
     """KataGo global pooling for value head.
     Output [B, 3*C]: mean, mean*(sqrt(N)-14)/10, mean*((sqrt(N)-14)^2/100 - 0.1)
+
+    mask: [B, 1, H, W] — board mask from input_binary channel 0.
+    N is computed dynamically from mask so ONNX traces correct ops
+    for any board size (not just 19×19).
     """
-    B, C, H, W = x.shape
-    N = float(H * W)
-    sqrt_N = N ** 0.5
-    mean = x.sum(dim=(2, 3)) / N                          # [B, C]
+    N = mask.sum(dim=(2, 3), keepdim=False).clamp(min=1.0)  # [B, 1]
+    sqrt_N = torch.sqrt(N)
+    masked_x = x * mask
+    mean = masked_x.sum(dim=(2, 3)) / N                      # [B, C]
     scale1 = (sqrt_N - 14.0) / 10.0
     scale2 = (sqrt_N - 14.0) ** 2 / 100.0 - 0.1
-    scaled_mean1 = mean * scale1                           # [B, C]
-    scaled_mean2 = mean * scale2                           # [B, C]
+    scaled_mean1 = mean * scale1                              # [B, C]
+    scaled_mean2 = mean * scale2                              # [B, C]
     return torch.cat([mean, scaled_mean1, scaled_mean2], dim=1)  # [B, 3*C]
 
 
@@ -222,12 +233,12 @@ class GPoolBlock(nn.Module):
         self.bn2 = None
         self.conv2 = nn.Conv2d(reg_c, trunk_c, 3, padding=1, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, mask):
         out = mish(self.bn1(x))
         reg = self.conv1a(out)
         gp = self.conv1b(out)
         gp = mish(self.bn1b(gp))
-        gp_pooled = kata_gpool(gp)
+        gp_pooled = kata_gpool(gp, mask)
         gp_out = self.w1r(gp_pooled)
         reg = reg + gp_out.unsqueeze(-1).unsqueeze(-1)
         out2 = mish(self.bn2(reg))
@@ -246,11 +257,11 @@ class PolicyHead(nn.Module):
         self.p2_conv = nn.Conv2d(policy_c, 1, 1, bias=False)
         self.pass_matmul = nn.Linear(3 * gpool_c_policy, 1, bias=False)
 
-    def forward(self, trunk_out):
+    def forward(self, trunk_out, mask):
         p = self.p1_conv(trunk_out)
         g = self.g1_conv(trunk_out)
         g = mish(self.g1_bn(g))
-        g_pooled = kata_gpool(g)
+        g_pooled = kata_gpool(g, mask)
         g_out = self.g2_matmul(g_pooled)
         p = p + g_out.unsqueeze(-1).unsqueeze(-1)
         p = mish(self.p1_bn(p))
@@ -302,17 +313,25 @@ class KataGoNet(nn.Module):
         self.own_conv = nn.Conv2d(v1_c, 1, 1, bias=False)
 
     def forward(self, input_binary, input_global):
+        # Extract board mask from channel 0 of input_binary.
+        # This is dynamic: for 13×13 on a 19×19 padded tensor,
+        # only the 13×13 region has 1s, so N will be 169, not 361.
+        mask = input_binary[:, 0:1, :, :]  # [B, 1, H, W]
+
         x = self.init_conv(input_binary)
         g = self.g_linear(input_global)
         x = x + g.unsqueeze(-1).unsqueeze(-1)
         for block in self.blocks:
-            x = block(x)
+            if isinstance(block, GPoolBlock):
+                x = block(x, mask)
+            else:
+                x = block(x)
         trunk_out = mish(self.trunk_bn(x))
 
-        policy = self.policy_head(trunk_out)
+        policy = self.policy_head(trunk_out, mask)
 
         v1_out = mish(self.value_head.v1_bn(self.value_head.v1_conv(trunk_out)))
-        v_pooled = kata_value_gpool(v1_out)
+        v_pooled = kata_value_gpool(v1_out, mask)
         v_hidden = mish(self.value_head.v2_fc(v_pooled))
         value = self.value_head.v3_fc(v_hidden)
 
