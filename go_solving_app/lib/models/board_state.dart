@@ -82,6 +82,34 @@ class BoardState {
     );
   }
 
+  /// 在指定位置下子，回傳新的 BoardState（immutable）
+  /// 此方法會更新 moveHistory 並切換 nextPlayer
+  BoardState playMove(int row, int col) {
+    if (row < 0 || row >= boardSize || col < 0 || col >= boardSize) {
+      throw RangeError('Position ($row, $col) out of bounds for $boardSize x $boardSize board');
+    }
+    if (grid[row][col] != StoneColor.empty) {
+      throw StateError('Position ($row, $col) is not empty');
+    }
+
+    final newGrid = List.generate(
+      boardSize,
+      (r) => List<StoneColor>.from(grid[r]),
+    );
+    newGrid[row][col] = nextPlayer;
+
+    final newHistory = List<BoardPosition>.from(moveHistory)
+      ..add(BoardPosition(row, col));
+
+    return BoardState(
+      boardSize: boardSize,
+      grid: newGrid,
+      nextPlayer: nextPlayer.opponent,
+      moveHistory: newHistory,
+      komi: komi,
+    );
+  }
+
   /// 複製棋盤並切換下一手玩家
   BoardState copyWithNextPlayer(StoneColor player) {
     return BoardState(
