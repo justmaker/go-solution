@@ -779,7 +779,9 @@ class BoardRecognition {
       (_) => List.filled(boardSize, StoneColor.empty),
     );
 
-    final sampleRadius = (warped.cols / boardSize * 0.2).round();
+    // 取樣半徑用 0.35 倍格距：比 0.2 更容易覆蓋稍有偏移的棋子，
+    // 同時星位小點在大面積中被稀釋，不易誤判
+    final sampleRadius = (warped.cols / boardSize * 0.35).round();
     final samples = <_IntersectionSample>[];
 
     for (int r = 0; r < boardSize; r++) {
