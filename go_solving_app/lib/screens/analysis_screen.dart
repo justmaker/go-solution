@@ -89,10 +89,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     setState(() {
       _isAnalyzing = true;
       _errorMessage = null;
+      _analysisResult = null;
     });
 
+    final engine = KataGoEngine();
     try {
-      final engine = KataGoEngine();
       await engine.initialize();
       final result = await engine.analyze(
         _boardState!.copyWithNextPlayer(_nextPlayer),
@@ -110,6 +111,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           _errorMessage = '分析失敗: $e';
         });
       }
+    } finally {
+      await engine.dispose();
     }
   }
 
