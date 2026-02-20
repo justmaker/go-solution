@@ -250,7 +250,7 @@ class KataGoEngine {
     final logitValues = boardLogits.map((e) => e.value).toList();
     final probs = _softmax(logitValues);
 
-    // 取 top-N 最佳著手
+    // 取 top-N 最佳著手（過濾已有棋子的位置）
     final moves = <MoveSuggestion>[];
     final indexed = List.generate(
       boardLogits.length,
@@ -258,15 +258,23 @@ class KataGoEngine {
     );
     indexed.sort((a, b) => b.value.compareTo(a.value));
 
-    for (int rank = 0; rank < min(5, indexed.length); rank++) {
-      final idx = indexed[rank].key;
+    var rank = 1;
+    for (final entry in indexed) {
+      if (rank > 5) break;
+      final idx = entry.key;
       final row = idx ~/ n;
       final col = idx % n;
+      // 跳過已有棋子的位置
+      if (row < board.boardSize && col < board.boardSize &&
+          board.grid[row][col] != StoneColor.empty) {
+        continue;
+      }
       moves.add(MoveSuggestion(
         position: BoardPosition(row, col),
-        probability: indexed[rank].value,
-        rank: rank + 1,
+        probability: entry.value,
+        rank: rank,
       ));
+      rank++;
     }
 
     // 解析 value（勝率）
