@@ -81,6 +81,34 @@ void main() {
       final board = BoardState(boardSize: 19);
       expect(board.komi, 7.5);
     });
+
+    test('playMove updates grid, history, and nextPlayer', () {
+      final board = BoardState(boardSize: 9);
+      expect(board.nextPlayer, StoneColor.black);
+
+      final board1 = board.playMove(4, 4);
+      expect(board1.getStone(4, 4), StoneColor.black);
+      expect(board1.nextPlayer, StoneColor.white);
+      expect(board1.moveHistory.length, 1);
+      expect(board1.moveHistory.last, const BoardPosition(4, 4));
+
+      final board2 = board1.playMove(3, 3);
+      expect(board2.getStone(3, 3), StoneColor.white);
+      expect(board2.nextPlayer, StoneColor.black);
+      expect(board2.moveHistory.length, 2);
+      expect(board2.moveHistory.last, const BoardPosition(3, 3));
+    });
+
+    test('playMove throws on non-empty', () {
+      var board = BoardState(boardSize: 9);
+      board = board.playMove(4, 4);
+      expect(() => board.playMove(4, 4), throwsStateError);
+    });
+
+    test('playMove throws on out of bounds', () {
+      final board = BoardState(boardSize: 9);
+      expect(() => board.playMove(9, 9), throwsRangeError);
+    });
   });
 
   group('StoneColor', () {

@@ -6,11 +6,13 @@ import '../models/analysis_result.dart';
 class BoardPainterWidget extends StatelessWidget {
   final BoardState boardState;
   final AnalysisResult? analysisResult;
+  final void Function(int row, int col)? onBoardTap;
 
   const BoardPainterWidget({
     super.key,
     required this.boardState,
     this.analysisResult,
+    this.onBoardTap,
   });
 
   @override
@@ -24,10 +26,29 @@ class BoardPainterWidget extends StatelessWidget {
           child: SizedBox(
             width: size,
             height: size,
-            child: CustomPaint(
-              painter: _BoardCustomPainter(
-                boardState: boardState,
-                analysisResult: analysisResult,
+            child: GestureDetector(
+              onTapUp: (details) {
+                if (onBoardTap == null) return;
+                final n = boardState.boardSize;
+                final margin = size * 0.08;
+                final boardWidth = size - 2 * margin;
+                final cellSize = boardWidth / (n - 1);
+
+                final dx = details.localPosition.dx - margin;
+                final dy = details.localPosition.dy - margin;
+
+                final col = (dx / cellSize).round();
+                final row = (dy / cellSize).round();
+
+                if (col >= 0 && col < n && row >= 0 && row < n) {
+                  onBoardTap!(row, col);
+                }
+              },
+              child: CustomPaint(
+                painter: _BoardCustomPainter(
+                  boardState: boardState,
+                  analysisResult: analysisResult,
+                ),
               ),
             ),
           ),
@@ -49,13 +70,17 @@ class _BoardCustomPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final n = boardState.boardSize;
-    final margin = size.width * 0.04;
+    // 增加邊距以容納座標
+    final margin = size.width * 0.08;
     final boardWidth = size.width - 2 * margin;
     final cellSize = boardWidth / (n - 1);
 
     // 繪製背景
     final bgPaint = Paint()..color = const Color(0xFFDEB887);
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
+
+    // 繪製座標
+    _drawCoordinates(canvas, size, n, margin, cellSize);
 
     // 繪製格線
     final linePaint = Paint()
@@ -91,7 +116,14 @@ class _BoardCustomPainter extends CustomPainter {
       for (int c = 0; c < n; c++) {
         final stone = boardState.grid[r][c];
         if (stone != StoneColor.empty) {
-          _drawStone(canvas, margin, cellSize, r, c, stone);
+          // 檢查是否為歷史步數
+          int? moveNumber;
+          final moveIndex = boardState.moveHistory
+              .indexWhere((m) => m.row == r && m.col == c);
+          if (moveIndex != -1) {
+            moveNumber = moveIndex + 1;
+          }
+          _drawStone(canvas, margin, cellSize, r, c, stone, moveNumber);
         }
       }
     }
@@ -126,6 +158,71 @@ class _BoardCustomPainter extends CustomPainter {
     }
   }
 
+  void _drawCoordinates(
+      Canvas canvas, Size size, int n, double margin, double cellSize) {
+    final textPainter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    );
+
+    final fontSize = cellSize * 0.4;
+    final textStyle = TextStyle(
+      color: Colors.black,
+      fontSize: fontSize,
+      fontWeight: FontWeight.bold,
+    );
+
+    // 橫座標 (A-T, no I)
+    const letters = 'ABCDEFGHJKLMNOPQRST';
+    for (int c = 0; c < n; c++) {
+      if (c >= letters.length) break;
+      textPainter.text = TextSpan(text: letters[c], style: textStyle);
+      textPainter.layout();
+
+      // Top
+      textPainter.paint(
+        canvas,
+        Offset(
+          margin + c * cellSize - textPainter.width / 2,
+          margin / 2 - textPainter.height / 2,
+        ),
+      );
+      // Bottom
+      textPainter.paint(
+        canvas,
+        Offset(
+          margin + c * cellSize - textPainter.width / 2,
+          size.height - margin / 2 - textPainter.height / 2,
+        ),
+      );
+    }
+
+    // 縱座標 (1-19)
+    for (int r = 0; r < n; r++) {
+      // 1 at bottom, n at top
+      final label = (n - r).toString();
+      textPainter.text = TextSpan(text: label, style: textStyle);
+      textPainter.layout();
+
+      // Left
+      textPainter.paint(
+        canvas,
+        Offset(
+          margin / 2 - textPainter.width / 2,
+          margin + r * cellSize - textPainter.height / 2,
+        ),
+      );
+      // Right
+      textPainter.paint(
+        canvas,
+        Offset(
+          size.width - margin / 2 - textPainter.width / 2,
+          margin + r * cellSize - textPainter.height / 2,
+        ),
+      );
+    }
+  }
+
   void _drawStone(
     Canvas canvas,
     double margin,
@@ -133,6 +230,7 @@ class _BoardCustomPainter extends CustomPainter {
     int row,
     int col,
     StoneColor color,
+    int? moveNumber,
   ) {
     final center = Offset(margin + col * cellSize, margin + row * cellSize);
     final radius = cellSize * 0.45;
@@ -140,6 +238,10 @@ class _BoardCustomPainter extends CustomPainter {
     if (color == StoneColor.black) {
       final paint = Paint()..color = Colors.black;
       canvas.drawCircle(center, radius, paint);
+
+      if (moveNumber != null) {
+        _drawMoveNumber(canvas, center, moveNumber, Colors.white, cellSize);
+      }
     } else {
       final paint = Paint()..color = Colors.white;
       canvas.drawCircle(center, radius, paint);
@@ -148,7 +250,35 @@ class _BoardCustomPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0;
       canvas.drawCircle(center, radius, borderPaint);
+
+      if (moveNumber != null) {
+        _drawMoveNumber(canvas, center, moveNumber, Colors.black, cellSize);
+      }
     }
+  }
+
+  void _drawMoveNumber(
+      Canvas canvas, Offset center, int number, Color color, double cellSize) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: number.toString(),
+        style: TextStyle(
+          color: color,
+          fontSize: cellSize * 0.5,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    );
+    textPainter.layout();
+    textPainter.paint(
+      canvas,
+      Offset(
+        center.dx - textPainter.width / 2,
+        center.dy - textPainter.height / 2,
+      ),
+    );
   }
 
   void _drawOwnership(

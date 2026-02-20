@@ -16,6 +16,9 @@ class AnalysisScreen extends StatefulWidget {
 
 class _AnalysisScreenState extends State<AnalysisScreen> {
   BoardState? _boardState;
+  BoardState? _initialBoardState;
+  final List<BoardState> _history = [];
+
   AnalysisResult? _analysisResult;
   bool _isRecognizing = false;
   bool _isAnalyzing = false;
@@ -37,8 +40,12 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
 
   void _loadDemoBoard() {
     final recognition = BoardRecognition();
+    final board = recognition.generateSampleBoard();
     setState(() {
-      _boardState = recognition.generateSampleBoard();
+      _boardState = board;
+      _initialBoardState = board;
+      _history.clear();
+      _nextPlayer = board.nextPlayer;
     });
     _runAnalysis();
   }
@@ -58,6 +65,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       if (mounted) {
         setState(() {
           _boardState = boardState;
+          _initialBoardState = boardState;
+          _history.clear();
+          _nextPlayer = boardState.nextPlayer;
           _isRecognizing = false;
         });
         _runAnalysis();
@@ -108,6 +118,43 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       _nextPlayer = _nextPlayer == StoneColor.black
           ? StoneColor.white
           : StoneColor.black;
+    });
+    _runAnalysis();
+  }
+
+  void _onBoardTap(int row, int col) {
+    if (_boardState == null || _isAnalyzing) return;
+
+    try {
+      // Check if empty
+      if (_boardState!.getStone(row, col) != StoneColor.empty) return;
+
+      setState(() {
+        _history.add(_boardState!);
+        _boardState = _boardState!.playMove(row, col);
+        _nextPlayer = _boardState!.nextPlayer;
+      });
+      _runAnalysis();
+    } catch (e) {
+      debugPrint('Invalid move: $e');
+    }
+  }
+
+  void _undo() {
+    if (_history.isEmpty) return;
+    setState(() {
+      _boardState = _history.removeLast();
+      _nextPlayer = _boardState!.nextPlayer;
+    });
+    _runAnalysis();
+  }
+
+  void _clear() {
+    if (_initialBoardState == null) return;
+    setState(() {
+      _boardState = _initialBoardState;
+      _history.clear();
+      _nextPlayer = _boardState!.nextPlayer;
     });
     _runAnalysis();
   }
@@ -186,6 +233,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             child: BoardPainterWidget(
               boardState: _boardState!,
               analysisResult: _analysisResult,
+              onBoardTap: _onBoardTap,
             ),
           ),
         ),
@@ -257,6 +305,21 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                     '下一手: ${_nextPlayer == StoneColor.black ? "黑" : "白"}',
                   ),
                 ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _history.isEmpty ? null : _undo,
+                icon: const Icon(Icons.undo),
+                label: const Text('復原'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _history.isEmpty &&
+                        _boardState == _initialBoardState
+                    ? null
+                    : _clear,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重置'),
               ),
             ],
           ),
