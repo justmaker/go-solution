@@ -121,22 +121,50 @@ class BoardRecognition {
 
     // 方法 A：顏色偵測 — 嚴格範圍（實拍棋盤）
     var warped = _findBoardByColor(original, 12, 35, 50, 100);
-    if (warped != null) return warped;
+    if (warped != null) {
+      debugPrint('[BoardRecognition] 使用顏色偵測 (Strict)');
+      return warped;
+    }
 
     // 方法 A2：顏色偵測 — 寬鬆範圍（截圖/螢幕翻拍，色彩較淡）
     warped = _findBoardByColor(original, 8, 42, 15, 50);
-    if (warped != null) return warped;
+    if (warped != null) {
+      debugPrint('[BoardRecognition] 使用顏色偵測 (Loose)');
+      return warped;
+    }
 
-    // 方法 B：邊緣偵測（Canny + 輪廓）
+    // 方法 B：增強型邊緣偵測（Canny + Dilate + Convex Hull）
     final gray = cv.cvtColor(original, cv.COLOR_BGR2GRAY);
     final blurred = cv.gaussianBlur(gray, (5, 5), 1.0);
-    final clahe = cv.CLAHE(2.0, (8, 8));
-    final enhanced = clahe.apply(blurred);
-    final edgeWarped = _findBoardByEdge(enhanced, original);
+    final edges = cv.canny(blurred, 30, 150);
+
+    // Dilate (連接斷裂邊緣)
+    final kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3));
+    final dilated = cv.dilate(edges, kernel, iterations: 2);
+    kernel.dispose();
+
+    var edgeWarped = _findBoardByContours(dilated, original);
+    if (edgeWarped != null) {
+      debugPrint('[BoardRecognition] 使用增強型輪廓偵測 (Convex Hull)');
+      gray.dispose();
+      blurred.dispose();
+      edges.dispose();
+      dilated.dispose();
+      return edgeWarped;
+    }
+
+    // 方法 C：Hough Lines (長邊偵測)
+    var houghWarped = _findBoardByHoughLines(dilated, original);
+
     gray.dispose();
     blurred.dispose();
-    enhanced.dispose();
-    if (edgeWarped != null) return edgeWarped;
+    edges.dispose();
+    dilated.dispose();
+
+    if (houghWarped != null) {
+      debugPrint('[BoardRecognition] 使用 Hough Lines 長邊偵測');
+      return houghWarped;
+    }
 
     debugPrint('[BoardRecognition] 所有偵測方法均失敗，使用原圖');
     return original.clone();
@@ -197,18 +225,152 @@ class BoardRecognition {
     final boxPoints = cv.boxPoints(rect);
     final corners = _orderPoints2f(boxPoints);
 
+    return _warpPerspective(original, corners);
+  }
+
+  /// 輪廓偵測：找最大凸包 (Convex Hull)
+  cv.Mat? _findBoardByContours(cv.Mat processed, cv.Mat original) {
+    final (contours, hierarchy) = cv.findContours(
+      processed,
+      cv.RETR_EXTERNAL,
+      cv.CHAIN_APPROX_SIMPLE,
+    );
+
+    cv.VecPoint? bestCnt;
+    double maxArea = 0;
+
+    for (final contour in contours) {
+      final area = cv.contourArea(contour);
+      if (area < original.rows * original.cols * 0.1) continue;
+
+      // 使用 Convex Hull 忽略邊緣凹陷 (如被手指或棋子遮擋)
+      final hullMat = cv.convexHull(contour, returnPoints: true);
+      final hull = cv.VecPoint.fromMat(hullMat);
+      hullMat.dispose();
+
+      final peri = cv.arcLength(hull, true);
+      final approx = cv.approxPolyDP(hull, 0.02 * peri, true);
+      hull.dispose();
+
+      if (approx.length == 4 && area > maxArea) {
+        bestCnt?.dispose();
+        maxArea = area;
+        bestCnt = approx;
+      } else {
+        approx.dispose();
+      }
+    }
+
+    // Dispose contours and hierarchy
+    contours.dispose();
+    hierarchy.dispose();
+
+    if (bestCnt == null) return null;
+
+    final corners = _orderPoints(bestCnt);
+    bestCnt.dispose(); // Dispose after usage
+
+    return _warpPerspective(original, corners.map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList());
+  }
+
+  /// Hough Lines 偵測
+  cv.Mat? _findBoardByHoughLines(cv.Mat edges, cv.Mat original) {
+    final linesMat = cv.HoughLinesP(edges, 1, pi / 180, 50,
+        minLineLength: original.cols * 0.2, maxLineGap: 20);
+
+    if (linesMat.rows < 4) {
+      linesMat.dispose();
+      return null;
+    }
+
+    final horizontals = <cv.Vec4i>[];
+    final verticals = <cv.Vec4i>[];
+
+    for (int i = 0; i < linesMat.rows; i++) {
+      final line = linesMat.at<cv.Vec4i>(i, 0);
+      final p1 = cv.Point(line.val1, line.val2);
+      final p2 = cv.Point(line.val3, line.val4);
+
+      final dx = (p2.x - p1.x).abs();
+      final dy = (p2.y - p1.y).abs();
+
+      if (dx == 0) {
+        verticals.add(line);
+        continue;
+      }
+
+      final slope = dy / dx;
+      if (slope < 0.5)
+        horizontals.add(line);
+      else if (slope > 2.0) verticals.add(line);
+    }
+    linesMat.dispose();
+
+    if (horizontals.length < 2 || verticals.length < 2) return null;
+
+    horizontals.sort((a, b) =>
+        ((a.val2 + a.val4) / 2).compareTo((b.val2 + b.val4) / 2));
+    final top = horizontals.first;
+    final bottom = horizontals.last;
+
+    verticals.sort((a, b) =>
+        ((a.val1 + a.val3) / 2).compareTo((b.val1 + b.val3) / 2));
+    final left = verticals.first;
+    final right = verticals.last;
+
+    cv.Point2f? intersection(cv.Vec4i l1, cv.Vec4i l2) {
+      final x1 = l1.val1.toDouble();
+      final y1 = l1.val2.toDouble();
+      final x2 = l1.val3.toDouble();
+      final y2 = l1.val4.toDouble();
+      final x3 = l2.val1.toDouble();
+      final y3 = l2.val2.toDouble();
+      final x4 = l2.val3.toDouble();
+      final y4 = l2.val4.toDouble();
+
+      final d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+      if (d == 0) return null;
+
+      final px =
+          ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) /
+              d;
+      final py =
+          ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) /
+              d;
+      return cv.Point2f(px, py);
+    }
+
+    final tl = intersection(top, left);
+    final tr = intersection(top, right);
+    final bl = intersection(bottom, left);
+    final br = intersection(bottom, right);
+
+    if (tl == null || tr == null || bl == null || br == null) return null;
+
+    return _warpPerspective(original, [tl, tr, bl, br]);
+  }
+
+  cv.Mat? _warpPerspective(cv.Mat original, List<cv.Point2f> corners) {
+    // Note: corners need to be converted to VecPoint2f for ordering if needed,
+    // but _orderPoints2f takes VecPoint2f.
+    // However, creating VecPoint2f from list allocates memory.
+    final cornersVec = cv.VecPoint2f.fromList(corners);
+    final sorted = _orderPoints2f(cornersVec);
+    cornersVec.dispose(); // Dispose input vector
+
     final w = max(
-      _distance2f(corners[0], corners[1]),
-      _distance2f(corners[2], corners[3]),
+      _distance2f(sorted[0], sorted[1]),
+      _distance2f(sorted[2], sorted[3]),
     ).toInt();
     final h = max(
-      _distance2f(corners[0], corners[3]),
-      _distance2f(corners[1], corners[2]),
+      _distance2f(sorted[0], sorted[3]),
+      _distance2f(sorted[1], sorted[2]),
     ).toInt();
     final size = max(w, h);
+
     if (size < 100) return null;
 
-    final srcPoints = cv.VecPoint2f.fromList(corners);
+    final srcPoints = cv.VecPoint2f.fromList(sorted);
     final dstPoints = cv.VecPoint2f.fromList([
       cv.Point2f(0, 0),
       cv.Point2f(size.toDouble() - 1, 0),
@@ -218,9 +380,11 @@ class BoardRecognition {
 
     final matrix = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
     final warped = cv.warpPerspective(original, matrix, (size, size));
-    matrix.dispose();
 
-    debugPrint('[BoardRecognition] 顏色偵測成功(H=$hLow-$hHigh S>=$sLow V>=$vLow): ${size}x$size (面積${(ratio * 100).toStringAsFixed(1)}%)');
+    matrix.dispose();
+    srcPoints.dispose();
+    dstPoints.dispose();
+
     return warped;
   }
 
@@ -236,58 +400,6 @@ class BoardRecognition {
 
   double _distance2f(cv.Point2f a, cv.Point2f b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
-  }
-
-  /// 邊緣偵測：Canny + 找四邊形輪廓
-  cv.Mat? _findBoardByEdge(cv.Mat processed, cv.Mat original) {
-    final edges = cv.canny(processed, 50, 150);
-    final (contours, _) = cv.findContours(
-      edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE,
-    );
-    edges.dispose();
-
-    cv.VecPoint? bestContour;
-    double maxArea = 0;
-    for (final contour in contours) {
-      final area = cv.contourArea(contour);
-      if (area < original.rows * original.cols * 0.1) continue;
-      final peri = cv.arcLength(contour, true);
-      final approx = cv.approxPolyDP(contour, 0.02 * peri, true);
-      if (approx.length == 4 && area > maxArea) {
-        maxArea = area;
-        bestContour = approx;
-      }
-    }
-
-    if (bestContour == null || bestContour.length != 4) return null;
-
-    final corners = _orderPoints(bestContour);
-    final w = max(
-      _distance(corners[0], corners[1]),
-      _distance(corners[2], corners[3]),
-    ).toInt();
-    final h = max(
-      _distance(corners[0], corners[3]),
-      _distance(corners[1], corners[2]),
-    ).toInt();
-    final size = max(w, h);
-
-    final srcPoints = cv.VecPoint2f.fromList(
-      corners.map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble())).toList(),
-    );
-    final dstPoints = cv.VecPoint2f.fromList([
-      cv.Point2f(0, 0),
-      cv.Point2f(size.toDouble() - 1, 0),
-      cv.Point2f(size.toDouble() - 1, size.toDouble() - 1),
-      cv.Point2f(0, size.toDouble() - 1),
-    ]);
-
-    final matrix = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
-    final warped = cv.warpPerspective(original, matrix, (size, size));
-    matrix.dispose();
-
-    debugPrint('[BoardRecognition] 邊緣偵測成功: ${size}x$size');
-    return warped;
   }
 
   List<cv.Point> _orderPoints(cv.VecPoint points) {
