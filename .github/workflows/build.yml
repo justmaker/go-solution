@@ -1,0 +1,75 @@
+name: Build Apps
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go_solving_app
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Build APK
+      run: flutter build apk --release
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-release-apk
+        path: go_solving_app/build/app/outputs/flutter-apk/app-release.apk
+
+  build-ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: go_solving_app
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Install Pods
+      working-directory: go_solving_app/ios
+      run: |
+        pod repo update
+        pod install
+
+    - name: Build iOS App (No Codesign)
+      run: flutter build ios --release --no-codesign
+
+    - name: Compress App
+      run: zip -r Runner.app.zip build/ios/iphoneos/Runner.app
+
+    - name: Upload iOS App
+      uses: actions/upload-artifact@v4
+      with:
+        name: runner-app-zip
+        path: go_solving_app/Runner.app.zip
