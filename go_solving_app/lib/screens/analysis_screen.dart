@@ -84,7 +84,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Future<void> _runAnalysis() async {
-    if (_boardState == null) return;
+    if (_boardState == null || _isAnalyzing) return;
 
     setState(() {
       _isAnalyzing = true;
@@ -117,6 +117,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   void _toggleNextPlayer() {
+    if (_isAnalyzing) return;
     setState(() {
       _nextPlayer = _nextPlayer == StoneColor.black
           ? StoneColor.white
@@ -144,7 +145,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   void _undo() {
-    if (_history.isEmpty) return;
+    if (_history.isEmpty || _isAnalyzing) return;
     setState(() {
       _boardState = _history.removeLast();
       _nextPlayer = _boardState!.nextPlayer;
@@ -153,7 +154,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   void _clear() {
-    if (_initialBoardState == null) return;
+    if (_initialBoardState == null || _isAnalyzing) return;
     setState(() {
       _boardState = _initialBoardState;
       _history.clear();
@@ -170,7 +171,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         actions: [
           if (_boardState != null)
             IconButton(
-              onPressed: _toggleNextPlayer,
+              onPressed: _isAnalyzing ? null : _toggleNextPlayer,
               icon: Icon(
                 Icons.swap_horiz,
                 color: _nextPlayer == StoneColor.black
@@ -292,7 +293,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _toggleNextPlayer,
+                  onPressed: _isAnalyzing ? null : _toggleNextPlayer,
                   icon: Container(
                     width: 16,
                     height: 16,
@@ -311,14 +312,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: _history.isEmpty ? null : _undo,
+                onPressed: _history.isEmpty || _isAnalyzing ? null : _undo,
                 icon: const Icon(Icons.undo),
                 label: const Text('復原'),
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: _history.isEmpty &&
-                        _boardState == _initialBoardState
+                onPressed: (_history.isEmpty &&
+                            _boardState == _initialBoardState) ||
+                        _isAnalyzing
                     ? null
                     : _clear,
                 icon: const Icon(Icons.refresh),
