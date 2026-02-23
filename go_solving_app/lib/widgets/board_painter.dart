@@ -111,18 +111,21 @@ class _BoardCustomPainter extends CustomPainter {
       _drawOwnership(canvas, n, margin, cellSize);
     }
 
+    // 預先建立步數索引以優化效能
+    final moveNumbers = <(int, int), int>{};
+    for (int i = 0; i < boardState.moveHistory.length; i++) {
+      final m = boardState.moveHistory[i];
+      // 僅保留該位置的第一個步數（符合原本 indexWhere 的行為）
+      moveNumbers.putIfAbsent((m.row, m.col), () => i + 1);
+    }
+
     // 繪製棋子
     for (int r = 0; r < n; r++) {
       for (int c = 0; c < n; c++) {
         final stone = boardState.grid[r][c];
         if (stone != StoneColor.empty) {
-          // 檢查是否為歷史步數
-          int? moveNumber;
-          final moveIndex = boardState.moveHistory
-              .indexWhere((m) => m.row == r && m.col == c);
-          if (moveIndex != -1) {
-            moveNumber = moveIndex + 1;
-          }
+          // 從 Map 中查找步數，複雜度為 O(1)
+          final moveNumber = moveNumbers[(r, c)];
           _drawStone(canvas, margin, cellSize, r, c, stone, moveNumber);
         }
       }
