@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:path_provider/path_provider.dart';
@@ -70,7 +71,10 @@ class KataGoEngine {
 
     try {
       // 執行推論
-      print('[KataGo] Running inference for ${n}x$n board (padded to ${_modelBoardSize}x$_modelBoardSize)...');
+      if (kDebugMode) {
+        debugPrint(
+            '[KataGo] Running inference for ${n}x$n board (padded to ${_modelBoardSize}x$_modelBoardSize)...');
+      }
       final outputs = await _session!.run({
         'input_binary': binaryTensor,
         'input_global': globalTensor,
@@ -78,8 +82,11 @@ class KataGoEngine {
 
       // 解析輸出
       final result = await _parseOutputs(outputs, board);
-      print('[KataGo] Top moves: ${result.topMoves.map((m) => '${m.position}=${m.probability}').toList()}');
-      print('[KataGo] Winrate: ${result.winrate}');
+      if (kDebugMode) {
+        debugPrint(
+            '[KataGo] Top moves: ${result.topMoves.map((m) => '${m.position}=${m.probability}').toList()}');
+        debugPrint('[KataGo] Winrate: ${result.winrate}');
+      }
       return result;
     } finally {
       await binaryTensor.dispose();

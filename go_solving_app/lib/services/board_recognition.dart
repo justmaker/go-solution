@@ -72,10 +72,13 @@ class BoardRecognition {
       final warped = _findAndWarpBoard(img);
 
       // 儲存 warped 供除錯
-      try {
-        cv.imwrite('/sdcard/Pictures/debug_warped.jpg', warped);
-        debugPrint('[BoardRecognition] 除錯: warped 已存到 /sdcard/Pictures/debug_warped.jpg');
-      } catch (_) {}
+      if (kDebugMode) {
+        try {
+          cv.imwrite('/sdcard/Pictures/debug_warped.jpg', warped);
+          debugPrint(
+              '[BoardRecognition] 除錯: warped 已存到 /sdcard/Pictures/debug_warped.jpg');
+        } catch (_) {}
+      }
 
       // 2. 偵測格線並推斷棋盤大小（均勻間距）
       final (boardSize, intersections) = _detectGridLines(warped);
@@ -117,19 +120,22 @@ class BoardRecognition {
 
   /// 嘗試用顏色偵測棋盤區域，失敗則用邊緣偵測，再失敗返回原圖
   cv.Mat _findAndWarpBoard(cv.Mat original) {
-    debugPrint('[BoardRecognition] 原始影像: ${original.cols}x${original.rows}');
+    if (kDebugMode) {
+      debugPrint(
+          '[BoardRecognition] 原始影像: ${original.cols}x${original.rows}');
+    }
 
     // 方法 A：顏色偵測 — 嚴格範圍（實拍棋盤）
     var warped = _findBoardByColor(original, 12, 35, 50, 100);
     if (warped != null) {
-      debugPrint('[BoardRecognition] 使用顏色偵測 (Strict)');
+      if (kDebugMode) debugPrint('[BoardRecognition] 使用顏色偵測 (Strict)');
       return warped;
     }
 
     // 方法 A2：顏色偵測 — 寬鬆範圍（截圖/螢幕翻拍，色彩較淡）
     warped = _findBoardByColor(original, 8, 42, 15, 50);
     if (warped != null) {
-      debugPrint('[BoardRecognition] 使用顏色偵測 (Loose)');
+      if (kDebugMode) debugPrint('[BoardRecognition] 使用顏色偵測 (Loose)');
       return warped;
     }
 
@@ -145,7 +151,9 @@ class BoardRecognition {
 
     var edgeWarped = _findBoardByContours(dilated, original);
     if (edgeWarped != null) {
-      debugPrint('[BoardRecognition] 使用增強型輪廓偵測 (Convex Hull)');
+      if (kDebugMode) {
+        debugPrint('[BoardRecognition] 使用增強型輪廓偵測 (Convex Hull)');
+      }
       gray.dispose();
       blurred.dispose();
       edges.dispose();
@@ -162,11 +170,11 @@ class BoardRecognition {
     dilated.dispose();
 
     if (houghWarped != null) {
-      debugPrint('[BoardRecognition] 使用 Hough Lines 長邊偵測');
+      if (kDebugMode) debugPrint('[BoardRecognition] 使用 Hough Lines 長邊偵測');
       return houghWarped;
     }
 
-    debugPrint('[BoardRecognition] 所有偵測方法均失敗，使用原圖');
+    if (kDebugMode) debugPrint('[BoardRecognition] 所有偵測方法均失敗，使用原圖');
     return original.clone();
   }
 
@@ -197,7 +205,10 @@ class BoardRecognition {
     cleaned.dispose();
 
     if (contours.isEmpty) {
-      debugPrint('[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 無輪廓');
+      if (kDebugMode) {
+        debugPrint(
+            '[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 無輪廓');
+      }
       return null;
     }
 
@@ -216,7 +227,10 @@ class BoardRecognition {
     final totalArea = original.rows * original.cols;
     final ratio = maxArea / totalArea;
     if (bestContour == null || ratio < 0.10) {
-      debugPrint('[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 面積不足 ${(ratio * 100).toStringAsFixed(1)}%');
+      if (kDebugMode) {
+        debugPrint(
+            '[BoardRecognition] 顏色偵測(H=$hLow-$hHigh S>=$sLow V>=$vLow): 面積不足 ${(ratio * 100).toStringAsFixed(1)}%');
+      }
       return null;
     }
 
@@ -468,8 +482,12 @@ class BoardRecognition {
     if (angles.isNotEmpty) {
       angles.sort();
       final medianAngle = angles[angles.length ~/ 2];
-      if (medianAngle.abs() > 0.005) { // > 0.3度才校正
-        debugPrint('[BoardRecognition] 應用旋轉校正: ${(medianAngle * 180 / pi).toStringAsFixed(2)}度');
+      if (medianAngle.abs() > 0.005) {
+        // > 0.3度才校正
+        if (kDebugMode) {
+          debugPrint(
+              '[BoardRecognition] 應用旋轉校正: ${(medianAngle * 180 / pi).toStringAsFixed(2)}度');
+        }
         final center = cv.Point2f(size / 2, size / 2);
         final rotMat = cv.getRotationMatrix2D(center, medianAngle * 180 / pi, 1.0);
         final rotated = cv.warpAffine(warped, rotMat, (size, size), borderMode: cv.BORDER_REPLICATE);
@@ -556,24 +574,28 @@ class BoardRecognition {
     final hCombined = _combinePositions(hDips, hClusters, size * 0.025);
     final vCombined = _combinePositions(vDips, vClusters, size * 0.025);
 
-    debugPrint('[BoardRecognition] Warped size: ${size}x$size');
-    debugPrint('[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
-    debugPrint('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
-    debugPrint('[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
-    // 列出合併位置的連續差值，幫助診斷
-    if (hCombined.length >= 2) {
-      final hDiffs = <String>[];
-      for (int i = 0; i < hCombined.length - 1; i++) {
-        hDiffs.add((hCombined[i + 1] - hCombined[i]).toStringAsFixed(0));
+    if (kDebugMode) {
+      debugPrint('[BoardRecognition] Warped size: ${size}x$size');
+      debugPrint(
+          '[BoardRecognition] Hough: H=${hClusters.length}, V=${vClusters.length}');
+      debugPrint('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
+      debugPrint(
+          '[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
+      // 列出合併位置的連續差值，幫助診斷
+      if (hCombined.length >= 2) {
+        final hDiffs = <String>[];
+        for (int i = 0; i < hCombined.length - 1; i++) {
+          hDiffs.add((hCombined[i + 1] - hCombined[i]).toStringAsFixed(0));
+        }
+        debugPrint('[BoardRecognition] H diffs: $hDiffs');
       }
-      debugPrint('[BoardRecognition] H diffs: $hDiffs');
-    }
-    if (vCombined.length >= 2) {
-      final vDiffs = <String>[];
-      for (int i = 0; i < vCombined.length - 1; i++) {
-        vDiffs.add((vCombined[i + 1] - vCombined[i]).toStringAsFixed(0));
+      if (vCombined.length >= 2) {
+        final vDiffs = <String>[];
+        for (int i = 0; i < vCombined.length - 1; i++) {
+          vDiffs.add((vCombined[i + 1] - vCombined[i]).toStringAsFixed(0));
+        }
+        debugPrint('[BoardRecognition] V diffs: $vDiffs');
       }
-      debugPrint('[BoardRecognition] V diffs: $vDiffs');
     }
 
     // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
@@ -614,10 +636,12 @@ class BoardRecognition {
       intersections.add(row);
     }
 
-    debugPrint(
-        '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
-    debugPrint(
-        '[BoardRecognition] 格線: ${hLines.length}x${vLines.length} → ${boardSize}x$boardSize');
+    if (kDebugMode) {
+      debugPrint(
+          '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
+      debugPrint(
+          '[BoardRecognition] 格線: ${hLines.length}x${vLines.length} → ${boardSize}x$boardSize');
+    }
     return (boardSize, intersections);
   }
 
@@ -1017,8 +1041,10 @@ class BoardRecognition {
       }
     }
 
-    lastDebugInfo = debug;
-    debugPrint(debug.toString());
+    if (kDebugMode) {
+      lastDebugInfo = debug;
+      debugPrint(debug.toString());
+    }
     return grid;
   }
 }
