@@ -74,9 +74,9 @@ class BoardRecognition {
       // 儲存 warped 供除錯
       if (kDebugMode) {
         try {
-          cv.imwrite('/sdcard/Pictures/debug_warped.jpg', warped);
+          cv.imwrite('/data/local/tmp/debug_warped.jpg', warped);
           debugPrint(
-              '[BoardRecognition] 除錯: warped 已存到 /sdcard/Pictures/debug_warped.jpg');
+              '[BoardRecognition] 除錯: warped 已存到 /data/local/tmp/debug_warped.jpg (adb pull 取得)');
         } catch (_) {}
       }
 
@@ -574,6 +574,11 @@ class BoardRecognition {
     final hCombined = _combinePositions(hDips, hClusters, size * 0.025);
     final vCombined = _combinePositions(vDips, vClusters, size * 0.025);
 
+    // === 過濾影像邊緣位置（座標標籤通常在外側 3%）===
+    final edgeMargin = size * 0.03;
+    final hFiltered = hCombined.where((p) => p >= edgeMargin && p <= size - edgeMargin).toList();
+    final vFiltered = vCombined.where((p) => p >= edgeMargin && p <= size - edgeMargin).toList();
+
     if (kDebugMode) {
       debugPrint('[BoardRecognition] Warped size: ${size}x$size');
       debugPrint(
@@ -581,18 +586,20 @@ class BoardRecognition {
       debugPrint('[BoardRecognition] Dips: H=${hDips.length}, V=${vDips.length}');
       debugPrint(
           '[BoardRecognition] Combined: H=${hCombined.length}, V=${vCombined.length}');
-      // 列出合併位置的連續差值，幫助診斷
-      if (hCombined.length >= 2) {
+      debugPrint(
+          '[BoardRecognition] Edge filtered (margin=${edgeMargin.toStringAsFixed(1)}): H=${hFiltered.length}, V=${vFiltered.length}');
+      // 列出過濾後位置的連續差值，幫助診斷
+      if (hFiltered.length >= 2) {
         final hDiffs = <String>[];
-        for (int i = 0; i < hCombined.length - 1; i++) {
-          hDiffs.add((hCombined[i + 1] - hCombined[i]).toStringAsFixed(0));
+        for (int i = 0; i < hFiltered.length - 1; i++) {
+          hDiffs.add((hFiltered[i + 1] - hFiltered[i]).toStringAsFixed(0));
         }
         debugPrint('[BoardRecognition] H diffs: $hDiffs');
       }
-      if (vCombined.length >= 2) {
+      if (vFiltered.length >= 2) {
         final vDiffs = <String>[];
-        for (int i = 0; i < vCombined.length - 1; i++) {
-          vDiffs.add((vCombined[i + 1] - vCombined[i]).toStringAsFixed(0));
+        for (int i = 0; i < vFiltered.length - 1; i++) {
+          vDiffs.add((vFiltered[i + 1] - vFiltered[i]).toStringAsFixed(0));
         }
         debugPrint('[BoardRecognition] V diffs: $vDiffs');
       }
@@ -600,9 +607,9 @@ class BoardRecognition {
 
     // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
     final (hSpacing, hPhase, hInl) =
-        _findBestSpacing(hCombined, size.toDouble());
+        _findBestSpacing(hFiltered, size.toDouble());
     final (vSpacing, vPhase, vInl) =
-        _findBestSpacing(vCombined, size.toDouble());
+        _findBestSpacing(vFiltered, size.toDouble());
 
     // 從最佳間距生成格線
     final hLines =
@@ -1017,8 +1024,9 @@ class BoardRecognition {
     debug.thresholdBoardWhite = thresholdBW;
 
     // 棋子（黑白皆）為無彩色，飽和度遠低於棋盤（暖色木板）
-    final satLimitBlack = min(boardMedianS * 0.7, 80.0);
-    final satLimitWhite = min(boardMedianS * 0.5, 60.0);
+    // max() 確保低飽和度的螢幕截圖不會因為閾值過嚴而漏偵測棋子
+    final satLimitBlack = max(min(boardMedianS * 0.7, 80.0), 30.0);
+    final satLimitWhite = max(min(boardMedianS * 0.5, 60.0), 25.0);
     debug.satLimitBlack = satLimitBlack;
     debug.satLimitWhite = satLimitWhite;
 
@@ -1044,6 +1052,13 @@ class BoardRecognition {
     if (kDebugMode) {
       lastDebugInfo = debug;
       debugPrint(debug.toString());
+      debugPrint(
+          '[BoardRecognition] 棋子偵測參數: modeV=${modeV.toStringAsFixed(1)}, '
+          'boardMedianS=${boardMedianS.toStringAsFixed(1)}, '
+          'satLimitBlack=${satLimitBlack.toStringAsFixed(1)}, '
+          'satLimitWhite=${satLimitWhite.toStringAsFixed(1)}, '
+          'thresholdBB=${thresholdBB.toStringAsFixed(1)}, '
+          'thresholdBW=${thresholdBW.toStringAsFixed(1)}');
     }
     return grid;
   }
