@@ -59,7 +59,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     try {
       final recognition = BoardRecognition();
       final boardState = await recognition.recognizeFromImage(imagePath);
-      if (recognition.lastDebugInfo != null) {
+      if (kDebugMode && recognition.lastDebugInfo != null) {
         debugPrint(recognition.lastDebugInfo.toString());
       }
       if (mounted) {
@@ -73,7 +73,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         _runAnalysis();
       }
     } catch (e, stackTrace) {
-      debugPrint('[AnalysisScreen] 辨識錯誤: $e\n$stackTrace');
+      if (kDebugMode) {
+        debugPrint('[AnalysisScreen] 辨識錯誤: $e\n$stackTrace');
+      }
       if (mounted) {
         setState(() {
           _isRecognizing = false;
@@ -140,7 +142,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       });
       _runAnalysis();
     } catch (e) {
-      debugPrint('Invalid move: $e');
+      if (kDebugMode) {
+        debugPrint('Invalid move: $e');
+      }
     }
   }
 
