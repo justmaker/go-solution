@@ -71,14 +71,10 @@ class BoardRecognition {
       // 1. 偵測棋盤邊界並進行透視校正
       final warped = _findAndWarpBoard(img);
 
-      // 儲存 warped 供除錯
-      if (kDebugMode) {
-        try {
-          cv.imwrite('/data/local/tmp/debug_warped.jpg', warped);
-          debugPrint(
-              '[BoardRecognition] 除錯: warped 已存到 /data/local/tmp/debug_warped.jpg (adb pull 取得)');
-        } catch (_) {}
-      }
+      // 儲存 warped 供除錯（release 也存，方便 adb pull 離線分析）
+      try {
+        cv.imwrite('/data/local/tmp/debug_warped.jpg', warped);
+      } catch (_) {}
 
       // 2. 偵測格線並推斷棋盤大小（均勻間距）
       final (boardSize, intersections) = _detectGridLines(warped);
@@ -128,14 +124,14 @@ class BoardRecognition {
     // 方法 A：顏色偵測 — 嚴格範圍（實拍棋盤）
     var warped = _findBoardByColor(original, 12, 35, 50, 100);
     if (warped != null) {
-      if (kDebugMode) debugPrint('[BoardRecognition] 使用顏色偵測 (Strict)');
+      print('[BoardRecognition] 板面偵測: 顏色 (Strict), warped=${warped.cols}x${warped.rows}');
       return warped;
     }
 
     // 方法 A2：顏色偵測 — 寬鬆範圍（截圖/螢幕翻拍，色彩較淡）
     warped = _findBoardByColor(original, 8, 42, 15, 50);
     if (warped != null) {
-      if (kDebugMode) debugPrint('[BoardRecognition] 使用顏色偵測 (Loose)');
+      print('[BoardRecognition] 板面偵測: 顏色 (Loose), warped=${warped.cols}x${warped.rows}');
       return warped;
     }
 
@@ -151,9 +147,7 @@ class BoardRecognition {
 
     var edgeWarped = _findBoardByContours(dilated, original);
     if (edgeWarped != null) {
-      if (kDebugMode) {
-        debugPrint('[BoardRecognition] 使用增強型輪廓偵測 (Convex Hull)');
-      }
+      print('[BoardRecognition] 板面偵測: 輪廓 (Convex Hull), warped=${edgeWarped.cols}x${edgeWarped.rows}');
       gray.dispose();
       blurred.dispose();
       edges.dispose();
@@ -170,11 +164,11 @@ class BoardRecognition {
     dilated.dispose();
 
     if (houghWarped != null) {
-      if (kDebugMode) debugPrint('[BoardRecognition] 使用 Hough Lines 長邊偵測');
+      print('[BoardRecognition] 板面偵測: Hough Lines, warped=${houghWarped.cols}x${houghWarped.rows}');
       return houghWarped;
     }
 
-    if (kDebugMode) debugPrint('[BoardRecognition] 所有偵測方法均失敗，使用原圖');
+    print('[BoardRecognition] 板面偵測: 全部失敗，使用原圖 ${original.cols}x${original.rows}');
     return original.clone();
   }
 
@@ -574,8 +568,8 @@ class BoardRecognition {
     final hCombined = _combinePositions(hDips, hClusters, size * 0.025);
     final vCombined = _combinePositions(vDips, vClusters, size * 0.025);
 
-    // === 過濾影像邊緣位置（座標標籤通常在外側 3%）===
-    final edgeMargin = size * 0.03;
+    // === 過濾影像邊緣位置（座標標籤通常在外側 3-5%）===
+    final edgeMargin = size * 0.05;
     final hFiltered = hCombined.where((p) => p >= edgeMargin && p <= size - edgeMargin).toList();
     final vFiltered = vCombined.where((p) => p >= edgeMargin && p <= size - edgeMargin).toList();
 
@@ -643,11 +637,15 @@ class BoardRecognition {
       intersections.add(row);
     }
 
+    // Release 可見的關鍵日誌
+    print('[BoardRecognition] 格線偵測: combined H=${hCombined.length}/V=${vCombined.length}'
+        ' → filtered H=${hFiltered.length}/V=${vFiltered.length} (margin=${edgeMargin.toStringAsFixed(0)})');
+    print('[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
+    print('[BoardRecognition] 格線: ${hLines.length}x${vLines.length} → ${boardSize}x$boardSize');
+
     if (kDebugMode) {
       debugPrint(
-          '[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
-      debugPrint(
-          '[BoardRecognition] 格線: ${hLines.length}x${vLines.length} → ${boardSize}x$boardSize');
+          '[BoardRecognition] H diffs after spacing: ${hLines.length >= 2 ? List.generate(hLines.length - 1, (i) => (hLines[i + 1] - hLines[i]).toStringAsFixed(0)) : "N/A"}');
     }
     return (boardSize, intersections);
   }
@@ -1049,16 +1047,15 @@ class BoardRecognition {
       }
     }
 
+    // Release 可見的棋子偵測摘要
+    print('[BoardRecognition] 棋子: 黑=${debug.blackCount}, 白=${debug.whiteCount}, 空=${debug.emptyCount} '
+        '(modeV=${modeV.toStringAsFixed(0)}, medS=${boardMedianS.toStringAsFixed(0)}, '
+        'BB<${thresholdBB.toStringAsFixed(0)}, BW>${thresholdBW.toStringAsFixed(0)}, '
+        'satB<${satLimitBlack.toStringAsFixed(0)}, satW<${satLimitWhite.toStringAsFixed(0)})');
+
     if (kDebugMode) {
       lastDebugInfo = debug;
       debugPrint(debug.toString());
-      debugPrint(
-          '[BoardRecognition] 棋子偵測參數: modeV=${modeV.toStringAsFixed(1)}, '
-          'boardMedianS=${boardMedianS.toStringAsFixed(1)}, '
-          'satLimitBlack=${satLimitBlack.toStringAsFixed(1)}, '
-          'satLimitWhite=${satLimitWhite.toStringAsFixed(1)}, '
-          'thresholdBB=${thresholdBB.toStringAsFixed(1)}, '
-          'thresholdBW=${thresholdBW.toStringAsFixed(1)}');
     }
     return grid;
   }
