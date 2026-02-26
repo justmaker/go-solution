@@ -600,10 +600,29 @@ class BoardRecognition {
     }
 
     // === 暴力搜尋 H/V 各自的最佳間距和相位 ===
-    final (hSpacing, hPhase, hInl) =
+    var (hSpacing, hPhase, hInl) =
         _findBestSpacing(hFiltered, size.toDouble());
-    final (vSpacing, vPhase, vInl) =
+    var (vSpacing, vPhase, vInl) =
         _findBestSpacing(vFiltered, size.toDouble());
+
+    // Cross-validate: warped 是正方形，H/V 間距應相近
+    // 若差異超過 15%，用 inlier 較多的方向修正較弱的方向
+    final spacingDiff = (hSpacing - vSpacing).abs() / max(hSpacing, vSpacing);
+    if (spacingDiff > 0.15) {
+      if (hInl >= vInl) {
+        final (newPhase, newInl) = _findBestPhase(vFiltered, hSpacing);
+        vSpacing = hSpacing;
+        vPhase = newPhase;
+        vInl = newInl;
+        print('[BoardRecognition] V 間距修正: 使用 H spacing $hSpacing (V inl: $newInl)');
+      } else {
+        final (newPhase, newInl) = _findBestPhase(hFiltered, vSpacing);
+        hSpacing = vSpacing;
+        hPhase = newPhase;
+        hInl = newInl;
+        print('[BoardRecognition] H 間距修正: 使用 V spacing $vSpacing (H inl: $newInl)');
+      }
+    }
 
     // 從最佳間距生成格線
     final hLines =
@@ -655,6 +674,27 @@ class BoardRecognition {
           '[BoardRecognition] H diffs after spacing: ${hLines.length >= 2 ? List.generate(hLines.length - 1, (i) => (hLines[i + 1] - hLines[i]).toStringAsFixed(0)) : "N/A"}');
     }
     return (boardSize, intersections);
+  }
+
+  /// 對給定間距找最佳相位（用於 cross-validation 修正）
+  (double, int) _findBestPhase(List<double> positions, double spacing) {
+    final tolerance = spacing * 0.12;
+    var bestPhase = 0.0;
+    var bestInliers = 0;
+    for (final ref in positions) {
+      final phase = ref % spacing;
+      var inliers = 0;
+      for (final p in positions) {
+        var remainder = (p - phase) % spacing;
+        if (remainder > spacing / 2) remainder = spacing - remainder;
+        if (remainder < tolerance) inliers++;
+      }
+      if (inliers > bestInliers) {
+        bestInliers = inliers;
+        bestPhase = phase;
+      }
+    }
+    return (bestPhase, bestInliers);
   }
 
   /// 暴力搜尋最佳間距：對每個候選間距，找最佳相位，用 inliers * sqrt(sp) 評分
