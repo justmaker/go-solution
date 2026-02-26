@@ -1024,14 +1024,18 @@ class BoardRecognition {
     debug.thresholdBlackBoard = thresholdBB;
     debug.thresholdBoardWhite = thresholdBW;
 
-    // 棋子（黑白皆）為無彩色，飽和度遠低於棋盤（暖色木板）
-    // max() 確保低飽和度的螢幕截圖不會因為閾值過嚴而漏偵測棋子
-    final satLimitBlack = max(min(boardMedianS * 0.7, 80.0), 30.0);
-    final satLimitWhite = max(min(boardMedianS * 0.5, 60.0), 25.0);
+    // 黑子飽和度限制：數位棋盤的黑子有暖色渲染，S 可能等於甚至高於棋盤
+    // 黑子已由低 V 值強力識別，飽和度只需排除極端彩色區域
+    final satLimitBlack = max(boardMedianS * 1.5, 50.0);
+    // 白子飽和度限制：白子通常低飽和度，需排除高飽和度的亮色區域
+    final satLimitWhite = max(min(boardMedianS * 0.8, 60.0), 25.0);
     debug.satLimitBlack = satLimitBlack;
     debug.satLimitWhite = satLimitWhite;
 
     // === 分類 ===
+    var darkCount = 0; // V < thresholdBB 的樣本數（含黑子候選）
+    var darkRejectedBySat = 0; // 暗但被飽和度拒絕
+    double darkMinS = 999, darkMaxS = 0;
     for (final sample in samples) {
       if (sample.avgV < 0) {
         // 無效樣本（出界）視為空
@@ -1039,9 +1043,17 @@ class BoardRecognition {
         continue;
       }
 
-      if (sample.avgV < thresholdBB && sample.avgS < satLimitBlack) {
-        grid[sample.row][sample.col] = StoneColor.black;
-        debug.blackCount++;
+      if (sample.avgV < thresholdBB) {
+        darkCount++;
+        if (sample.avgS < darkMinS) darkMinS = sample.avgS;
+        if (sample.avgS > darkMaxS) darkMaxS = sample.avgS;
+        if (sample.avgS < satLimitBlack) {
+          grid[sample.row][sample.col] = StoneColor.black;
+          debug.blackCount++;
+        } else {
+          darkRejectedBySat++;
+          debug.emptyCount++;
+        }
       } else if (sample.avgV > thresholdBW && sample.avgS < satLimitWhite) {
         grid[sample.row][sample.col] = StoneColor.white;
         debug.whiteCount++;
@@ -1055,6 +1067,9 @@ class BoardRecognition {
         '(modeV=${modeV.toStringAsFixed(0)}, medS=${boardMedianS.toStringAsFixed(0)}, '
         'BB<${thresholdBB.toStringAsFixed(0)}, BW>${thresholdBW.toStringAsFixed(0)}, '
         'satB<${satLimitBlack.toStringAsFixed(0)}, satW<${satLimitWhite.toStringAsFixed(0)})');
+    print('[BoardRecognition] 暗位置: $darkCount個 (V<${thresholdBB.toStringAsFixed(0)}), '
+        'S範圍=${darkMinS.toStringAsFixed(1)}~${darkMaxS.toStringAsFixed(1)}, '
+        '被S拒絕=$darkRejectedBySat');
 
     if (kDebugMode) {
       lastDebugInfo = debug;
