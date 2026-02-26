@@ -624,10 +624,14 @@ class BoardRecognition {
     }
 
     // 修剪/擴展到棋盤大小
-    final hFinal =
+    final hTrimmed =
         _trimToSize(hLines, boardSize, hSpacing, size.toDouble());
-    final vFinal =
+    final vTrimmed =
         _trimToSize(vLines, boardSize, vSpacing, size.toDouble());
+
+    // 用投影 profile 逐線精修位置，消除間距累積誤差
+    final hFinal = _refineToProjection(hTrimmed, hSmooth, hSpacing);
+    final vFinal = _refineToProjection(vTrimmed, vSmooth, vSpacing);
 
     final intersections = <List<cv.Point2f>>[];
     for (int r = 0; r < boardSize; r++) {
@@ -643,8 +647,8 @@ class BoardRecognition {
         ' → filtered H=${hFiltered.length}/V=${vFiltered.length} (margin=${edgeMargin.toStringAsFixed(0)})');
     print('[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
     print('[BoardRecognition] 格線: ${hLines.length}x${vLines.length}, maxInliers=$maxInliers → ${boardSize}x$boardSize');
-    print('[BoardRecognition] H positions: ${hFiltered.map((p) => p.toStringAsFixed(0)).join(",")}');
-    print('[BoardRecognition] V positions: ${vFiltered.map((p) => p.toStringAsFixed(0)).join(",")}');
+    print('[BoardRecognition] H trimmed→refined: ${hTrimmed.map((p) => p.toStringAsFixed(0)).join(",")} → ${hFinal.map((p) => p.toStringAsFixed(0)).join(",")}');
+    print('[BoardRecognition] V trimmed→refined: ${vTrimmed.map((p) => p.toStringAsFixed(0)).join(",")} → ${vFinal.map((p) => p.toStringAsFixed(0)).join(",")}');
 
     if (kDebugMode) {
       debugPrint(
@@ -780,6 +784,28 @@ class BoardRecognition {
       }
     }
     return result.sublist(0, target);
+  }
+
+  /// 用投影 profile 精修格線位置：在每條線附近搜尋實際 dip，消除間距累積誤差
+  List<double> _refineToProjection(
+      List<double> positions, List<double> profile, double spacing) {
+    final searchRadius = (spacing * 0.3).toInt();
+    final refined = <double>[];
+    for (final pos in positions) {
+      final center = pos.round().clamp(0, profile.length - 1);
+      final lo = max(0, center - searchRadius);
+      final hi = min(profile.length - 1, center + searchRadius);
+      var bestIdx = center;
+      var bestVal = profile[center];
+      for (int i = lo; i <= hi; i++) {
+        if (profile[i] < bestVal) {
+          bestVal = profile[i];
+          bestIdx = i;
+        }
+      }
+      refined.add(bestIdx.toDouble());
+    }
+    return refined;
   }
 
   /// 計算單通道影像的行或列平均值（投影）
