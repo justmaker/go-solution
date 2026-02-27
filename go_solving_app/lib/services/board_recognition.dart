@@ -827,26 +827,25 @@ class BoardRecognition {
     return result.sublist(0, target);
   }
 
-  /// 用投影 profile 精修格線位置：在每條線附近搜尋實際 dip，消除間距累積誤差
+  /// 用投影 profile 做全局相位精修：搜尋使所有格線的投影值加總最小的偏移量
+  /// 保持均勻間距，避免 per-line 精修受棋子 dip 干擾
   List<double> _refineToProjection(
       List<double> positions, List<double> profile, double spacing) {
-    final searchRadius = (spacing * 0.3).toInt();
-    final refined = <double>[];
-    for (final pos in positions) {
-      final center = pos.round().clamp(0, profile.length - 1);
-      final lo = max(0, center - searchRadius);
-      final hi = min(profile.length - 1, center + searchRadius);
-      var bestIdx = center;
-      var bestVal = profile[center];
-      for (int i = lo; i <= hi; i++) {
-        if (profile[i] < bestVal) {
-          bestVal = profile[i];
-          bestIdx = i;
-        }
+    final searchRadius = (spacing * 0.25).toInt();
+    var bestShift = 0;
+    var bestScore = double.infinity;
+    for (int shift = -searchRadius; shift <= searchRadius; shift++) {
+      var score = 0.0;
+      for (final pos in positions) {
+        final idx = (pos + shift).round().clamp(0, profile.length - 1);
+        score += profile[idx];
       }
-      refined.add(bestIdx.toDouble());
+      if (score < bestScore) {
+        bestScore = score;
+        bestShift = shift;
+      }
     }
-    return refined;
+    return positions.map((p) => p + bestShift).toList();
   }
 
   /// 計算單通道影像的行或列平均值（投影）
