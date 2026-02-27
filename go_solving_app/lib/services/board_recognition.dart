@@ -630,13 +630,14 @@ class BoardRecognition {
     final vLines =
         _generateGridFromSpacing(vPhase, vSpacing, size.toDouble());
 
-    // 決定棋盤大小：用 inlier 數（與間距一致的位置數）而非生成的格線數
-    // 格線數可能因邊框線等假位置而膨脹，但 inlier 數更準確反映實際格線
-    final maxInliers = hInl > vInl ? hInl : vInl;
+    // 決定棋盤大小：用 spacing ratio（imageSize / spacing）最穩定
+    // 9x9: ratio≈10, 13x13: ratio≈14, 19x19: ratio≈20
+    final bestSpacing = hInl >= vInl ? hSpacing : vSpacing;
+    final sizeRatio = size / bestSpacing;
     final int boardSize;
-    if (maxInliers <= 10) {
+    if (sizeRatio < 11.5) {
       boardSize = 9;
-    } else if (maxInliers <= 15) {
+    } else if (sizeRatio < 17) {
       boardSize = 13;
     } else {
       boardSize = 19;
@@ -665,7 +666,7 @@ class BoardRecognition {
     print('[BoardRecognition] 格線偵測: combined H=${hCombined.length}/V=${vCombined.length}'
         ' → filtered H=${hFiltered.length}/V=${vFiltered.length} (margin=${edgeMargin.toStringAsFixed(0)})');
     print('[BoardRecognition] 間距: H=${hSpacing.toStringAsFixed(1)} (inl=$hInl), V=${vSpacing.toStringAsFixed(1)} (inl=$vInl)');
-    print('[BoardRecognition] 格線: ${hLines.length}x${vLines.length}, maxInliers=$maxInliers → ${boardSize}x$boardSize');
+    print('[BoardRecognition] 格線: ${hLines.length}x${vLines.length}, ratio=${sizeRatio.toStringAsFixed(1)} → ${boardSize}x$boardSize');
     print('[BoardRecognition] H trimmed→refined: ${hTrimmed.map((p) => p.toStringAsFixed(0)).join(",")} → ${hFinal.map((p) => p.toStringAsFixed(0)).join(",")}');
     print('[BoardRecognition] V trimmed→refined: ${vTrimmed.map((p) => p.toStringAsFixed(0)).join(",")} → ${vFinal.map((p) => p.toStringAsFixed(0)).join(",")}');
 
