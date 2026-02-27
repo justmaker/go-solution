@@ -1080,7 +1080,7 @@ class BoardRecognition {
 
     // 基於 Mode 設定黑白閾值
     // 黑子顯著暗於棋盤，白子顯著亮於棋盤
-    var thresholdBB = modeV - 60.0;
+    var thresholdBB = modeV - 50.0;
     var thresholdBW = modeV + 40.0;
 
     // 安全鉗位：避免閾值過於極端
@@ -1091,8 +1091,8 @@ class BoardRecognition {
     debug.thresholdBoardWhite = thresholdBW;
 
     // 黑子飽和度限制：數位棋盤的黑子有暖色渲染，S 可能等於甚至高於棋盤
-    // 黑子已由低 V 值強力識別，飽和度只需排除極端彩色區域
-    final satLimitBlack = max(boardMedianS * 1.5, 50.0);
+    // 取樣偏心時會混入更多木板像素，拉高 S；V 閾值已足夠識別黑子
+    final satLimitBlack = max(boardMedianS * 2.5, 60.0);
     // 白子飽和度限制：白子通常低飽和度，需排除高飽和度的亮色區域
     final satLimitWhite = max(min(boardMedianS * 0.8, 60.0), 25.0);
     debug.satLimitBlack = satLimitBlack;
