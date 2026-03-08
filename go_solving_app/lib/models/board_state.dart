@@ -38,6 +38,8 @@ class BoardPosition {
 class BoardState {
   final int boardSize;
   final List<List<StoneColor>> grid;
+  final List<List<StoneColor>>? initialGrid;
+  final List<List<StoneColor>>? previousGrid;
   final StoneColor nextPlayer;
   final List<BoardPosition> moveHistory;
   final double komi;
@@ -45,6 +47,8 @@ class BoardState {
   BoardState({
     required this.boardSize,
     List<List<StoneColor>>? grid,
+    this.initialGrid,
+    this.previousGrid,
     this.nextPlayer = StoneColor.black,
     List<BoardPosition>? moveHistory,
     this.komi = 7.5,
@@ -76,10 +80,66 @@ class BoardState {
     return BoardState(
       boardSize: boardSize,
       grid: newGrid,
+      initialGrid: initialGrid,
+      previousGrid: previousGrid,
       nextPlayer: nextPlayer,
       moveHistory: List.from(moveHistory),
       komi: komi,
     );
+  }
+
+  // Helpers to get adjacent positions
+  List<BoardPosition> _getAdjacent(int row, int col) {
+    final adj = <BoardPosition>[];
+    if (row > 0) adj.add(BoardPosition(row - 1, col));
+    if (row < boardSize - 1) adj.add(BoardPosition(row + 1, col));
+    if (col > 0) adj.add(BoardPosition(row, col - 1));
+    if (col < boardSize - 1) adj.add(BoardPosition(row, col + 1));
+    return adj;
+  }
+
+  // Helper to find a group of stones of the same color
+  Set<BoardPosition> _getGroup(int startRow, int startCol, List<List<StoneColor>> currentGrid) {
+    final color = currentGrid[startRow][startCol];
+    final group = <BoardPosition>{};
+    final queue = [BoardPosition(startRow, startCol)];
+
+    while (queue.isNotEmpty) {
+      final pos = queue.removeLast();
+      if (!group.contains(pos)) {
+        group.add(pos);
+        for (final adj in _getAdjacent(pos.row, pos.col)) {
+          if (currentGrid[adj.row][adj.col] == color && !group.contains(adj)) {
+            queue.add(adj);
+          }
+        }
+      }
+    }
+    return group;
+  }
+
+  // Helper to get liberties of a group
+  int _getLiberties(Set<BoardPosition> group, List<List<StoneColor>> currentGrid) {
+    final liberties = <BoardPosition>{};
+    for (final pos in group) {
+      for (final adj in _getAdjacent(pos.row, pos.col)) {
+        if (currentGrid[adj.row][adj.col] == StoneColor.empty) {
+          liberties.add(adj);
+        }
+      }
+    }
+    return liberties.length;
+  }
+
+  bool _gridsEqual(List<List<StoneColor>> grid1, List<List<StoneColor>> grid2) {
+    for (int r = 0; r < boardSize; r++) {
+      for (int c = 0; c < boardSize; c++) {
+        if (grid1[r][c] != grid2[r][c]) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   /// 在指定位置下子，回傳新的 BoardState（immutable）
@@ -98,13 +158,47 @@ class BoardState {
     );
     newGrid[row][col] = nextPlayer;
 
+    // Evaluate captures
+    bool capturedAny = false;
+    final opponent = nextPlayer.opponent;
+    for (final adj in _getAdjacent(row, col)) {
+      if (newGrid[adj.row][adj.col] == opponent) {
+        final group = _getGroup(adj.row, adj.col, newGrid);
+        if (_getLiberties(group, newGrid) == 0) {
+          capturedAny = true;
+          for (final pos in group) {
+            newGrid[pos.row][pos.col] = StoneColor.empty;
+          }
+        }
+      }
+    }
+
+    // Suicide prevention
+    if (!capturedAny) {
+      final selfGroup = _getGroup(row, col, newGrid);
+      if (_getLiberties(selfGroup, newGrid) == 0) {
+        throw StateError('Suicide move is not allowed');
+      }
+    }
+
+    // Ko rule
+    if (previousGrid != null && _gridsEqual(newGrid, previousGrid!)) {
+      throw StateError('Ko rule violation');
+    }
+
     final newHistory = List<BoardPosition>.from(moveHistory)
       ..add(BoardPosition(row, col));
+
+    // If initialGrid isn't set yet (i.e. this is the first played move),
+    // save the current grid as the starting point.
+    final initGrid = initialGrid ?? grid;
 
     return BoardState(
       boardSize: boardSize,
       grid: newGrid,
-      nextPlayer: nextPlayer.opponent,
+      initialGrid: initGrid,
+      previousGrid: grid, // Current grid becomes previous grid
+      nextPlayer: opponent,
       moveHistory: newHistory,
       komi: komi,
     );
@@ -115,6 +209,8 @@ class BoardState {
     return BoardState(
       boardSize: boardSize,
       grid: List.generate(boardSize, (r) => List<StoneColor>.from(grid[r])),
+      initialGrid: initialGrid,
+      previousGrid: previousGrid,
       nextPlayer: player,
       moveHistory: List.from(moveHistory),
       komi: komi,

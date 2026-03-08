@@ -54,34 +54,66 @@ class KataGoEngine {
     // 目前模擬的下一手玩家，初始為黑棋 (空盤開始)
     StoneColor currentNext = StoneColor.black;
 
-    // 遍歷棋盤，放置所有棋子
+    // Use initial grid setup for base state
+    final baseGrid = board.initialGrid ?? board.grid;
+
+    // 遍歷初始棋盤，放置所有已有的棋子
     for (int r = 0; r < board.boardSize; r++) {
       for (int c = 0; c < board.boardSize; c++) {
-        final stone = board.grid[r][c];
+        final stone = baseGrid[r][c];
         if (stone == StoneColor.empty) continue;
 
         final coord = _toGtpCoord(r, c, board.boardSize);
 
         if (stone == StoneColor.black) {
-          // 如果當前輪到白棋，白棋先 Pass
           if (currentNext == StoneColor.white) {
             moves.add('W pass');
             currentNext = StoneColor.black;
           }
-          // 黑棋下子
           moves.add('B $coord');
           currentNext = StoneColor.white;
         } else if (stone == StoneColor.white) {
-          // 如果當前輪到黑棋，黑棋先 Pass
           if (currentNext == StoneColor.black) {
             moves.add('B pass');
             currentNext = StoneColor.white;
           }
-          // 白棋下子
           moves.add('W $coord');
           currentNext = StoneColor.black;
         }
       }
+    }
+
+    // Synchronize the player turn before replaying moveHistory.
+    // We know the final nextPlayer after all history moves.
+    // Working backwards, we can determine the player who made the first move in history.
+    StoneColor expectedNext = board.nextPlayer;
+    if (board.moveHistory.isNotEmpty) {
+      if (board.moveHistory.length % 2 != 0) {
+        expectedNext = expectedNext.opponent;
+      }
+
+      // If the engine's current turn doesn't match the expected first player, add a pass
+      if (currentNext != expectedNext) {
+        if (currentNext == StoneColor.black) {
+          moves.add('B pass');
+        } else {
+          moves.add('W pass');
+        }
+        currentNext = currentNext.opponent;
+      }
+    }
+
+    // Replay move history to allow KataGo to see recent captures and handle Ko
+    for (int i = 0; i < board.moveHistory.length; i++) {
+        final pos = board.moveHistory[i];
+        final coord = _toGtpCoord(pos.row, pos.col, board.boardSize);
+        if (currentNext == StoneColor.black) {
+            moves.add('B $coord');
+            currentNext = StoneColor.white;
+        } else {
+            moves.add('W $coord');
+            currentNext = StoneColor.black;
+        }
     }
 
     // 調整最後的下一手玩家以符合 BoardState
