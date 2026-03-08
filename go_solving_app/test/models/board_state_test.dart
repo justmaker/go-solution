@@ -109,6 +109,52 @@ void main() {
       final board = BoardState(boardSize: 9);
       expect(() => board.playMove(9, 9), throwsRangeError);
     });
+
+    test('captures single stone correctly', () {
+      var board = BoardState(boardSize: 9);
+
+      // B: (0, 0), W: (0, 1), W: (1, 0)
+      board = board.setStone(0, 0, StoneColor.black);
+      board = board.setStone(0, 1, StoneColor.white);
+
+      // W plays (1, 0)
+      board = board.copyWithNextPlayer(StoneColor.white);
+      board = board.playMove(1, 0);
+
+      expect(board.getStone(0, 0), StoneColor.empty);
+    });
+
+    test('captures multiple stones correctly', () {
+      var board = BoardState(boardSize: 9);
+
+      // Setup situation where W surrounds two B stones at (0, 0) and (0, 1)
+      // B: (0, 0), (0, 1)
+      // W: (1, 0), (1, 1), (0, 2)
+      board = board.setStone(0, 0, StoneColor.black);
+      board = board.setStone(0, 1, StoneColor.black);
+
+      board = board.setStone(1, 0, StoneColor.white);
+      board = board.setStone(1, 1, StoneColor.white);
+
+      // W plays (0, 2)
+      board = board.copyWithNextPlayer(StoneColor.white);
+      board = board.playMove(0, 2);
+
+      expect(board.getStone(0, 0), StoneColor.empty);
+      expect(board.getStone(0, 1), StoneColor.empty);
+    });
+
+    test('throws StateError on suicide move', () {
+      var board = BoardState(boardSize: 9);
+
+      // W surrounds (0,0)
+      board = board.setStone(0, 1, StoneColor.white);
+      board = board.setStone(1, 0, StoneColor.white);
+
+      // B tries to play at (0,0)
+      board = board.copyWithNextPlayer(StoneColor.black);
+      expect(() => board.playMove(0, 0), throwsStateError);
+    });
   });
 
   group('StoneColor', () {

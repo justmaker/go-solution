@@ -115,8 +115,8 @@ class _BoardCustomPainter extends CustomPainter {
     final moveNumbers = <(int, int), int>{};
     for (int i = 0; i < boardState.moveHistory.length; i++) {
       final m = boardState.moveHistory[i];
-      // 僅保留該位置的第一個步數（符合原本 indexWhere 的行為）
-      moveNumbers.putIfAbsent((m.row, m.col), () => i + 1);
+      // 保存該位置最新的步數（若被提吃後再下，顯示最新步數）
+      moveNumbers[(m.row, m.col)] = i + 1;
     }
 
     // 繪製棋子
