@@ -18,12 +18,20 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   BoardState? _boardState;
   BoardState? _initialBoardState;
   final List<BoardState> _history = [];
+  final KataGoEngine _engine = KataGoEngine();
 
   AnalysisResult? _analysisResult;
   bool _isRecognizing = false;
   bool _isAnalyzing = false;
+  bool _needsReanalysis = false;
   String? _errorMessage;
   StoneColor _nextPlayer = StoneColor.black;
+
+  @override
+  void dispose() {
+    _engine.dispose();
+    super.dispose();
+  }
 
   @override
   void didChangeDependencies() {
@@ -86,7 +94,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Future<void> _runAnalysis() async {
-    if (_boardState == null || _isAnalyzing) return;
+    if (_boardState == null) return;
+    if (_isAnalyzing) {
+      _needsReanalysis = true;
+      // Clear analysis result when a new move is made while analyzing
+      setState(() {
+        _analysisResult = null;
+      });
+      return;
+    }
 
     setState(() {
       _isAnalyzing = true;
@@ -94,17 +110,24 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       _analysisResult = null;
     });
 
-    final engine = KataGoEngine();
     try {
-      await engine.initialize();
-      final result = await engine.analyze(
-        _boardState!.copyWithNextPlayer(_nextPlayer),
-      );
+      if (!_engine.isInitialized) {
+        await _engine.initialize();
+      }
+
+      final stateToAnalyze = _boardState!.copyWithNextPlayer(_nextPlayer);
+      final result = await _engine.analyze(stateToAnalyze);
+
       if (mounted) {
         setState(() {
           _analysisResult = result;
           _isAnalyzing = false;
         });
+
+        if (_needsReanalysis) {
+          _needsReanalysis = false;
+          _runAnalysis();
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -112,24 +135,27 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           _isAnalyzing = false;
           _errorMessage = '分析失敗: $e';
         });
+
+        if (_needsReanalysis) {
+          _needsReanalysis = false;
+          _runAnalysis();
+        }
       }
-    } finally {
-      await engine.dispose();
     }
   }
 
   void _toggleNextPlayer() {
-    if (_isAnalyzing) return;
     setState(() {
       _nextPlayer = _nextPlayer == StoneColor.black
           ? StoneColor.white
           : StoneColor.black;
+      _analysisResult = null;
     });
     _runAnalysis();
   }
 
   void _onBoardTap(int row, int col) {
-    if (_boardState == null || _isAnalyzing) return;
+    if (_boardState == null) return;
 
     try {
       // Check if empty
@@ -139,6 +165,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         _history.add(_boardState!);
         _boardState = _boardState!.playMove(row, col);
         _nextPlayer = _boardState!.nextPlayer;
+        _analysisResult = null;
       });
       _runAnalysis();
     } catch (e) {
@@ -149,20 +176,22 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   void _undo() {
-    if (_history.isEmpty || _isAnalyzing) return;
+    if (_history.isEmpty) return;
     setState(() {
       _boardState = _history.removeLast();
       _nextPlayer = _boardState!.nextPlayer;
+      _analysisResult = null;
     });
     _runAnalysis();
   }
 
   void _clear() {
-    if (_initialBoardState == null || _isAnalyzing) return;
+    if (_initialBoardState == null) return;
     setState(() {
       _boardState = _initialBoardState;
       _history.clear();
       _nextPlayer = _boardState!.nextPlayer;
+      _analysisResult = null;
     });
     _runAnalysis();
   }
@@ -175,7 +204,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         actions: [
           if (_boardState != null)
             IconButton(
-              onPressed: _isAnalyzing ? null : _toggleNextPlayer,
+              onPressed: _toggleNextPlayer,
               icon: Icon(
                 Icons.swap_horiz,
                 color: _nextPlayer == StoneColor.black
@@ -297,7 +326,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _isAnalyzing ? null : _toggleNextPlayer,
+                  onPressed: _toggleNextPlayer,
                   icon: Container(
                     width: 16,
                     height: 16,
@@ -316,15 +345,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: _history.isEmpty || _isAnalyzing ? null : _undo,
+                onPressed: _history.isEmpty ? null : _undo,
                 icon: const Icon(Icons.undo),
                 label: const Text('復原'),
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: (_history.isEmpty &&
-                            _boardState == _initialBoardState) ||
-                        _isAnalyzing
+                            _boardState == _initialBoardState)
                     ? null
                     : _clear,
                 icon: const Icon(Icons.refresh),
