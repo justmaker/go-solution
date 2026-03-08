@@ -37,12 +37,20 @@ class AnalysisResult {
   /// 分析時的下一手玩家
   final StoneColor nextPlayer;
 
+  /// 當前分析的模擬次數
+  final int visits;
+
+  /// 最大目標模擬次數
+  final int maxVisits;
+
   const AnalysisResult({
     required this.topMoves,
     required this.winrate,
     this.ownership,
     required this.boardSize,
     required this.nextPlayer,
+    this.visits = 0,
+    this.maxVisits = 0,
   });
 
   /// 黑棋勝率
@@ -64,7 +72,7 @@ class AnalysisResult {
   @override
   String toString() {
     final sb = StringBuffer();
-    sb.writeln('AnalysisResult (${boardSize}x$boardSize, next: $nextPlayer)');
+    sb.writeln('AnalysisResult (${boardSize}x$boardSize, next: $nextPlayer, visits: $visits/$maxVisits)');
     sb.writeln('Winrate: $winrateText');
     for (final move in topMoves) {
       sb.writeln('  $move');
