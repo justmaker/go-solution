@@ -98,6 +98,40 @@ class BoardState {
     );
     newGrid[row][col] = nextPlayer;
 
+    // 檢查鄰近的對手棋子是否被提吃
+    final opponentColor = nextPlayer.opponent;
+    final adjacentPositions = [
+      (row - 1, col),
+      (row + 1, col),
+      (row, col - 1),
+      (row, col + 1),
+    ];
+
+    int capturedStones = 0;
+    for (final pos in adjacentPositions) {
+      final r = pos.$1;
+      final c = pos.$2;
+      if (r >= 0 && r < boardSize && c >= 0 && c < boardSize) {
+        if (newGrid[r][c] == opponentColor) {
+          final group = _getGroup(newGrid, r, c);
+          if (_getLiberties(newGrid, group) == 0) {
+            for (final stonePos in group) {
+              newGrid[stonePos.row][stonePos.col] = StoneColor.empty;
+              capturedStones++;
+            }
+          }
+        }
+      }
+    }
+
+    // 檢查自殺步 (如果沒有提吃對手，且自己沒有氣)
+    if (capturedStones == 0) {
+      final group = _getGroup(newGrid, row, col);
+      if (_getLiberties(newGrid, group) == 0) {
+        throw StateError('Position ($row, $col) is a suicide move');
+      }
+    }
+
     final newHistory = List<BoardPosition>.from(moveHistory)
       ..add(BoardPosition(row, col));
 
@@ -108,6 +142,66 @@ class BoardState {
       moveHistory: newHistory,
       komi: komi,
     );
+  }
+
+  Set<BoardPosition> _getGroup(List<List<StoneColor>> currentGrid, int startRow, int startCol) {
+    final color = currentGrid[startRow][startCol];
+    final group = <BoardPosition>{};
+    final queue = <BoardPosition>[BoardPosition(startRow, startCol)];
+
+    // Using a simple list as a queue is fine here since max board size is small (19x19),
+    // but we can optimize it slightly by tracking the read index instead of removeAt(0).
+    int readIndex = 0;
+
+    while (readIndex < queue.length) {
+      final pos = queue[readIndex++];
+      if (group.contains(pos)) continue;
+
+      group.add(pos);
+
+      final adjacentPositions = [
+        (pos.row - 1, pos.col),
+        (pos.row + 1, pos.col),
+        (pos.row, pos.col - 1),
+        (pos.row, pos.col + 1),
+      ];
+
+      for (final adj in adjacentPositions) {
+        final r = adj.$1;
+        final c = adj.$2;
+        if (r >= 0 && r < boardSize && c >= 0 && c < boardSize) {
+          if (currentGrid[r][c] == color) {
+            queue.add(BoardPosition(r, c));
+          }
+        }
+      }
+    }
+    return group;
+  }
+
+  int _getLiberties(List<List<StoneColor>> currentGrid, Set<BoardPosition> group) {
+    final liberties = <BoardPosition>{};
+
+    for (final pos in group) {
+      final adjacentPositions = [
+        (pos.row - 1, pos.col),
+        (pos.row + 1, pos.col),
+        (pos.row, pos.col - 1),
+        (pos.row, pos.col + 1),
+      ];
+
+      for (final adj in adjacentPositions) {
+        final r = adj.$1;
+        final c = adj.$2;
+        if (r >= 0 && r < boardSize && c >= 0 && c < boardSize) {
+          if (currentGrid[r][c] == StoneColor.empty) {
+            liberties.add(BoardPosition(r, c));
+          }
+        }
+      }
+    }
+
+    return liberties.length;
   }
 
   /// 複製棋盤並切換下一手玩家
