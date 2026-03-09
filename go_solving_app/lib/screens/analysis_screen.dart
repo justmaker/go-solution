@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/board_state.dart';
@@ -19,16 +20,17 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   BoardState? _initialBoardState;
   final List<BoardState> _history = [];
   final KataGoEngine _engine = KataGoEngine();
+  StreamSubscription<AnalysisResult>? _analysisSubscription;
 
   AnalysisResult? _analysisResult;
   bool _isRecognizing = false;
   bool _isAnalyzing = false;
-  bool _needsReanalysis = false;
   String? _errorMessage;
   StoneColor _nextPlayer = StoneColor.black;
 
   @override
   void dispose() {
+    _analysisSubscription?.cancel();
     _engine.dispose();
     super.dispose();
   }
@@ -95,14 +97,10 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
 
   Future<void> _runAnalysis() async {
     if (_boardState == null) return;
-    if (_isAnalyzing) {
-      _needsReanalysis = true;
-      // Clear analysis result when a new move is made while analyzing
-      setState(() {
-        _analysisResult = null;
-      });
-      return;
-    }
+
+    // 取消目前的分析
+    await _analysisSubscription?.cancel();
+    _engine.cancelAnalysis();
 
     setState(() {
       _isAnalyzing = true;
@@ -116,30 +114,37 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       }
 
       final stateToAnalyze = _boardState!.copyWithNextPlayer(_nextPlayer);
-      final result = await _engine.analyze(stateToAnalyze);
 
-      if (mounted) {
-        setState(() {
-          _analysisResult = result;
-          _isAnalyzing = false;
-        });
-
-        if (_needsReanalysis) {
-          _needsReanalysis = false;
-          _runAnalysis();
-        }
-      }
+      _analysisSubscription = _engine.analyze(stateToAnalyze).listen(
+        (result) {
+          if (mounted) {
+            setState(() {
+              _analysisResult = result;
+            });
+          }
+        },
+        onError: (e) {
+          if (mounted) {
+            setState(() {
+              _isAnalyzing = false;
+              _errorMessage = '分析失敗: $e';
+            });
+          }
+        },
+        onDone: () {
+          if (mounted) {
+            setState(() {
+              _isAnalyzing = false;
+            });
+          }
+        },
+      );
     } catch (e) {
       if (mounted) {
         setState(() {
           _isAnalyzing = false;
           _errorMessage = '分析失敗: $e';
         });
-
-        if (_needsReanalysis) {
-          _needsReanalysis = false;
-          _runAnalysis();
-        }
       }
     }
   }
@@ -275,18 +280,20 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           ),
         ),
         if (_isAnalyzing)
-          const Padding(
-            padding: EdgeInsets.all(8.0),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                SizedBox(
+                const SizedBox(
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-                SizedBox(width: 8),
-                Text('AI 分析中...'),
+                const SizedBox(width: 8),
+                Text(_analysisResult != null && _analysisResult!.maxVisits > 0
+                    ? 'AI 分析中... (${_analysisResult!.visits}/${_analysisResult!.maxVisits})'
+                    : 'AI 分析中...'),
               ],
             ),
           ),

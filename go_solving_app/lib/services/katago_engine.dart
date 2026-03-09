@@ -9,8 +9,15 @@ class KataGoEngine {
   final kg.KataGoEngine _engine = kg.KataGoEngine();
 
   bool _isInitialized = false;
+  bool _isEngineBusy = false;
+  bool _cancelFlag = false;
 
   bool get isInitialized => _isInitialized;
+
+  /// 取消當前分析
+  void cancelAnalysis() {
+    _cancelFlag = true;
+  }
 
   /// 初始化引擎
   Future<void> initialize() async {
@@ -26,25 +33,48 @@ class KataGoEngine {
   }
 
   /// 分析棋盤狀態
-  Future<AnalysisResult> analyze(BoardState board) async {
+  Stream<AnalysisResult> analyze(BoardState board) async* {
     if (!_isInitialized) {
       await initialize();
     }
 
-    // 將 BoardState 轉換為 KataGo 需要的 moves 列表
-    // 由於我們需要設置任意棋盤狀態，我們使用 "下子 + Pass" 的方式來放置每一顆棋子
-    final moves = _convertBoardToMoves(board);
+    // Wait if the engine is already busy (avoid concurrent native calls)
+    while (_isEngineBusy) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
 
-    // 執行分析
-    // maxVisits 設定為 100，在手機上是一個合理的平衡點
-    final result = await _engine.analyze(
-      boardSize: board.boardSize,
-      moves: moves,
-      komi: board.komi,
-      maxVisits: 100,
-    );
+    _isEngineBusy = true;
+    _cancelFlag = false;
 
-    return _convertResult(result, board);
+    try {
+      // 將 BoardState 轉換為 KataGo 需要的 moves 列表
+      // 由於我們需要設置任意棋盤狀態，我們使用 "下子 + Pass" 的方式來放置每一顆棋子
+      final moves = _convertBoardToMoves(board);
+
+      // 定義漸進式的分析目標
+      final visitTargets = [1, 5, 20, 50, 100];
+      final finalMaxVisits = visitTargets.last;
+
+      for (final target in visitTargets) {
+        if (_cancelFlag) {
+          break; // 使用者取消了分析
+        }
+
+        // 執行分析
+        final result = await _engine.analyze(
+          boardSize: board.boardSize,
+          moves: moves,
+          komi: board.komi,
+          maxVisits: target,
+        );
+
+        // 返回當前進度的分析結果
+        yield _convertResult(result, board, finalMaxVisits);
+      }
+    } finally {
+      _isEngineBusy = false;
+      _cancelFlag = false;
+    }
   }
 
   /// 將棋盤狀態轉換為 GTP moves 列表
@@ -128,7 +158,7 @@ class KataGoEngine {
   }
 
   /// 將分析結果轉換為 App 使用的格式
-  AnalysisResult _convertResult(kg.EngineAnalysisResult engineResult, BoardState board) {
+  AnalysisResult _convertResult(kg.EngineAnalysisResult engineResult, BoardState board, int maxVisits) {
     final totalVisits = engineResult.visits;
 
     // 轉換建議著手
@@ -164,6 +194,8 @@ class KataGoEngine {
       ownership: null, // Native engine 不支援 ownership
       boardSize: board.boardSize,
       nextPlayer: board.nextPlayer,
+      visits: totalVisits,
+      maxVisits: maxVisits,
     );
   }
 
