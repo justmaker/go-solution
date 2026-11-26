@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>需要存取相簿以選取棋盤照片進行辨識</string>
+	<key>NSCameraUsageDescription</key>
+	<string>需要使用相機拍攝棋盤照片進行辨識</string>
 </dict>
 </plist>

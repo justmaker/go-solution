@@ -50,17 +50,7 @@ class HomeScreen extends StatelessWidget {
                 width: double.infinity,
                 height: 56,
                 child: OutlinedButton.icon(
-                  onPressed: () async {
-                    final imageService = ImageService();
-                    final imagePath = await imageService.pickFromGallery();
-                    if (imagePath != null && context.mounted) {
-                      Navigator.pushNamed(
-                        context,
-                        '/analysis',
-                        arguments: imagePath,
-                      );
-                    }
-                  },
+                  onPressed: () => _onPickFromGallery(context),
                   icon: const Icon(Icons.photo_library),
                   label: const Text('從相簿選取'),
                 ),
@@ -86,5 +76,25 @@ class HomeScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _onPickFromGallery(BuildContext context) async {
+    final imageService = ImageService();
+    try {
+      final imagePath = await imageService.pickFromGallery();
+      if (imagePath != null && context.mounted) {
+        Navigator.pushNamed(
+          context,
+          '/analysis',
+          arguments: imagePath,
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('相簿選取失敗：$e')),
+        );
+      }
+    }
   }
 }
