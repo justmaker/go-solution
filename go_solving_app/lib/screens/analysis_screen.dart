@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models/board_state.dart';
 import '../models/analysis_result.dart';
 import '../services/board_recognition.dart';
 import '../services/katago_engine.dart';
+import '../services/sgf_service.dart';
 import '../widgets/board_painter.dart';
 import '../widgets/move_suggestion.dart';
 
@@ -20,11 +22,13 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   BoardState? _initialBoardState;
   final List<BoardState> _history = [];
   final KataGoEngine _engine = KataGoEngine();
+  final SgfService _sgfService = SgfService();
   StreamSubscription<AnalysisResult>? _analysisSubscription;
 
   AnalysisResult? _analysisResult;
   bool _isRecognizing = false;
   bool _isAnalyzing = false;
+  bool _isExporting = false;
   String? _errorMessage;
   StoneColor _nextPlayer = StoneColor.black;
 
@@ -56,8 +60,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       _initialBoardState = board;
       _history.clear();
       _nextPlayer = board.nextPlayer;
+      _analysisResult = null;
     });
-    _runAnalysis();
+    // 選取/載入棋盤後不自動分析，等使用者按下「分析」按鈕
   }
 
   Future<void> _recognizeBoard(String imagePath) async {
@@ -79,8 +84,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           _history.clear();
           _nextPlayer = boardState.nextPlayer;
           _isRecognizing = false;
+          _analysisResult = null;
         });
-        _runAnalysis();
+        // 棋盤辨識完成後不自動分析，等使用者按下「分析」按鈕才開始
       }
     } catch (e, stackTrace) {
       if (kDebugMode) {
@@ -96,9 +102,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Future<void> _runAnalysis() async {
-    if (_boardState == null) return;
+    if (_boardState == null || _isAnalyzing) return;
 
-    // 取消目前的分析
+    // 取消目前的分析（理論上不該發生，因為上面已擋掉重複呼叫）
     await _analysisSubscription?.cancel();
     _engine.cancelAnalysis();
 
@@ -149,18 +155,29 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
+  Future<void> _stopAnalysis() async {
+    _engine.cancelAnalysis();
+    await _analysisSubscription?.cancel();
+    _analysisSubscription = null;
+    if (mounted) {
+      setState(() {
+        _isAnalyzing = false;
+      });
+    }
+  }
+
   void _toggleNextPlayer() {
+    if (_isAnalyzing) return;
     setState(() {
       _nextPlayer = _nextPlayer == StoneColor.black
           ? StoneColor.white
           : StoneColor.black;
       _analysisResult = null;
     });
-    _runAnalysis();
   }
 
   void _onBoardTap(int row, int col) {
-    if (_boardState == null) return;
+    if (_boardState == null || _isAnalyzing) return;
 
     try {
       // Check if empty
@@ -172,7 +189,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         _nextPlayer = _boardState!.nextPlayer;
         _analysisResult = null;
       });
-      _runAnalysis();
     } catch (e) {
       if (kDebugMode) {
         debugPrint('Invalid move: $e');
@@ -181,24 +197,59 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   void _undo() {
-    if (_history.isEmpty) return;
+    if (_history.isEmpty || _isAnalyzing) return;
     setState(() {
       _boardState = _history.removeLast();
       _nextPlayer = _boardState!.nextPlayer;
       _analysisResult = null;
     });
-    _runAnalysis();
   }
 
   void _clear() {
-    if (_initialBoardState == null) return;
+    if (_initialBoardState == null || _isAnalyzing) return;
     setState(() {
       _boardState = _initialBoardState;
       _history.clear();
       _nextPlayer = _boardState!.nextPlayer;
       _analysisResult = null;
     });
-    _runAnalysis();
+  }
+
+  Future<void> _exportSgf() async {
+    if (_boardState == null || _isExporting) return;
+
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      // 匯出「目前畫面上看到的盤面」，不論實際下子順序為何，
+      // SGF 內容一律以 setup properties (AB/AW) 記錄最終盤面的所有棋子位置，
+      // 確保匯出結果與匯出當下畫面一致。
+      final boardToExport = _boardState!.copyWithNextPlayer(_nextPlayer);
+      final file = await _sgfService.exportToFile(boardToExport);
+      if (mounted) {
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          text: '圍棋盤面 SGF 匯出',
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[AnalysisScreen] SGF 匯出失敗: $e');
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('SGF 匯出失敗：$e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
+    }
   }
 
   @override
@@ -209,7 +260,19 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         actions: [
           if (_boardState != null)
             IconButton(
-              onPressed: _toggleNextPlayer,
+              onPressed: _isExporting ? null : _exportSgf,
+              icon: _isExporting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.file_download),
+              tooltip: '匯出 SGF',
+            ),
+          if (_boardState != null)
+            IconButton(
+              onPressed: _isAnalyzing ? null : _toggleNextPlayer,
               icon: Icon(
                 Icons.swap_horiz,
                 color: _nextPlayer == StoneColor.black
@@ -332,34 +395,32 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           child: Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _toggleNextPlayer,
-                  icon: Container(
-                    width: 16,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _nextPlayer == StoneColor.black
-                          ? Colors.black
-                          : Colors.white,
-                      border: Border.all(color: Colors.grey),
-                    ),
-                  ),
-                  label: Text(
-                    '下一手: ${_nextPlayer == StoneColor.black ? "黑" : "白"}',
-                  ),
-                ),
+                child: _isAnalyzing
+                    ? FilledButton.icon(
+                        onPressed: _stopAnalysis,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.red,
+                        ),
+                        icon: const Icon(Icons.stop),
+                        label: const Text('停止分析'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: _runAnalysis,
+                        icon: const Icon(Icons.auto_awesome),
+                        label: const Text('分析'),
+                      ),
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: _history.isEmpty ? null : _undo,
+                onPressed: (_history.isEmpty || _isAnalyzing) ? null : _undo,
                 icon: const Icon(Icons.undo),
                 label: const Text('復原'),
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: (_history.isEmpty &&
-                            _boardState == _initialBoardState)
+                onPressed: ((_history.isEmpty &&
+                            _boardState == _initialBoardState) ||
+                        _isAnalyzing)
                     ? null
                     : _clear,
                 icon: const Icon(Icons.refresh),

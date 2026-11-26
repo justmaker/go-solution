@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 相簿選取圖片所需權限 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- 拍照所需權限 -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <application
         android:label="go_solving_app"
         android:name="${applicationName}"
