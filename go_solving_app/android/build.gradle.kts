@@ -27,9 +27,11 @@ subprojects {
 // `checkReleaseAarMetadata` task passes.
 subprojects {
     if (project.name == "onnxruntime") {
-        plugins.withId("com.android.library") {
-            extensions.configure<com.android.build.gradle.LibraryExtension> {
-                compileSdk = 36
+        afterEvaluate {
+            plugins.withId("com.android.library") {
+                extensions.configure<com.android.build.gradle.LibraryExtension> {
+                    compileSdk = 36
+                }
             }
         }
     }
