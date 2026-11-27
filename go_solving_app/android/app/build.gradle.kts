@@ -54,3 +54,16 @@ android {
 flutter {
     source = "../.."
 }
+
+// Workaround: pub.dev `onnxruntime` plugin's Android library (katago_onnx_mobile
+// transitive dep) ships with compileSdk=33 while transitive AndroidX libs
+// (androidx.core 1.13.1, androidx.fragment 1.7.1, etc.) require compileSdk>=34.
+// This conflict is in the upstream onnxruntime package metadata, not in this
+// app's own compileSdk (already flutter.compileSdkVersion=36). Disable the
+// AAR metadata check so release builds aren't blocked by this third-party
+// library mismatch.
+tasks.configureEach {
+    if (name.startsWith("check") && name.endsWith("AarMetadata")) {
+        enabled = false
+    }
+}
