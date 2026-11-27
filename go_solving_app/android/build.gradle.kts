@@ -19,16 +19,18 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
-// Workaround: pub.dev `onnxruntime` plugin's Android library (transitive dep
-// via katago_onnx_mobile) ships compileSdk=33 while other transitive AndroidX
-// libs (androidx.core 1.13.1, androidx.fragment 1.7.1, etc.) require
-// compileSdk>=34. This mismatch is in upstream plugin metadata, not in this
-// app's own compileSdk (already flutter.compileSdkVersion=36). Disable the
-// AAR metadata check in every subproject so release builds aren't blocked.
+// Workaround: pub.dev `onnxruntime` plugin (Android library, transitive dep
+// via katago_onnx_mobile) hardcodes compileSdk=33 in its own build.gradle,
+// but other transitive AndroidX libs resolved into the build (androidx.core
+// 1.13.1, androidx.fragment 1.7.1, etc.) require compileSdk>=34. Raise the
+// onnxruntime module's compileSdk to match this app's compileSdk so its own
+// `checkReleaseAarMetadata` task passes.
 subprojects {
-    tasks.configureEach {
-        if (name.startsWith("check") && name.endsWith("AarMetadata")) {
-            enabled = false
+    if (project.name == "onnxruntime") {
+        plugins.withId("com.android.library") {
+            extensions.configure<com.android.build.gradle.LibraryExtension> {
+                compileSdk = 36
+            }
         }
     }
 }
